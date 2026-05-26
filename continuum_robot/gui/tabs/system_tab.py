@@ -288,6 +288,20 @@ class SystemTab(QWidget):
         self.coarse_jog_step_spin = QSpinBox()
         self.coarse_jog_step_spin.setRange(1, 1024)
         self.coarse_jog_step_spin.valueChanged.connect(self._mark_parameter_dirty)
+        self.servo_profile_velocity_spin = QSpinBox()
+        self.servo_profile_velocity_spin.setRange(1, 300)
+        self.servo_profile_velocity_spin.setValue(3)
+        self.servo_profile_velocity_spin.valueChanged.connect(self._mark_parameter_dirty)
+        self.servo_profile_acceleration_spin = QSpinBox()
+        self.servo_profile_acceleration_spin.setRange(1, 100)
+        self.servo_profile_acceleration_spin.setValue(1)
+        self.servo_profile_acceleration_spin.valueChanged.connect(self._mark_parameter_dirty)
+        self.apply_servo_profile_button = QPushButton("Push Servo Speed")
+        self.apply_servo_profile_button.setProperty("variant", "ghost")
+        self.apply_servo_profile_button.clicked.connect(self._apply_servo_motion_profile)
+        self.servo_profile_status_label = QLabel("not pushed")
+        self.servo_profile_status_label.setProperty("role", "hint")
+        self.servo_profile_status_label.setWordWrap(True)
         self.figure_quality_combo = NoWheelComboBox()
         for label, value in (
             ("Low (120 dpi)", "low"),
@@ -328,6 +342,12 @@ class SystemTab(QWidget):
         self.parameters_form.addRow("Baudrate", self.baudrate_spin)
         self.parameters_form.addRow("Fine jog (ticks)", self.fine_jog_step_spin)
         self.parameters_form.addRow("Coarse jog (ticks)", self.coarse_jog_step_spin)
+        self.parameters_form.addRow("Servo speed profile", self.servo_profile_velocity_spin)
+        self.parameters_form.addRow("Servo accel profile", self.servo_profile_acceleration_spin)
+        profile_push_row = QHBoxLayout()
+        profile_push_row.addWidget(self.apply_servo_profile_button)
+        profile_push_row.addWidget(self.servo_profile_status_label, 1)
+        self.parameters_form.addRow("Speed write", profile_push_row)
         parameters_layout.addLayout(self.parameters_form)
         save_row = QHBoxLayout()
         save_row.addWidget(self.save_parameters_button)
@@ -452,6 +472,8 @@ class SystemTab(QWidget):
         self.openrb_connect_button.setEnabled(not openrb_connected)
         self.openrb_disconnect_button.setEnabled(openrb_connected)
         self.prepare_button.setEnabled(bool(state.openrb_connected))
+        self.apply_servo_profile_button.setEnabled(bool(state.dynamixel_connected))
+        self.servo_profile_status_label.setText(state.servo_motion_profile_status or "not pushed")
         session_log_path = self._session_log_path()
         has_session_log = bool(session_log_path is not None and session_log_path.exists())
         self.copy_log_path_button.setEnabled(has_session_log)
@@ -558,6 +580,16 @@ class SystemTab(QWidget):
         self._sync_openrb_port()
         self.controller.connect_openrb()
 
+    def _apply_servo_motion_profile(self) -> None:
+        applier = getattr(self.controller, "apply_servo_motion_profile", None)
+        if not callable(applier):
+            return
+        state = applier(
+            profile_velocity=int(self.servo_profile_velocity_spin.value()),
+            profile_acceleration=int(self.servo_profile_acceleration_spin.value()),
+        )
+        self.update(state)
+
     def _save_runtime_parameters(self) -> None:
         parameters = {
             "mock_mode": bool(self.mock_mode_combo.currentData()),
@@ -575,6 +607,8 @@ class SystemTab(QWidget):
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
             "fine_jog_step_ticks": int(self.fine_jog_step_spin.value()),
             "coarse_jog_step_ticks": int(self.coarse_jog_step_spin.value()),
+            "servo_profile_velocity": int(self.servo_profile_velocity_spin.value()),
+            "servo_profile_acceleration": int(self.servo_profile_acceleration_spin.value()),
         }
         handler = self._apply_runtime_parameters or self.controller.save_runtime_parameters
         try:
@@ -1006,6 +1040,12 @@ class SystemTab(QWidget):
             set_spinbox_value(self.telemetry_freshness_spin, float(values["telemetry_freshness_timeout_s"]), block_signals=True)
             set_spinbox_value(self.fine_jog_step_spin, int(values["fine_jog_step_ticks"]), block_signals=True)
             set_spinbox_value(self.coarse_jog_step_spin, int(values["coarse_jog_step_ticks"]), block_signals=True)
+            set_spinbox_value(self.servo_profile_velocity_spin, int(values["servo_profile_velocity"]), block_signals=True)
+            set_spinbox_value(
+                self.servo_profile_acceleration_spin,
+                int(values["servo_profile_acceleration"]),
+                block_signals=True,
+            )
             self._sync_operating_mode_visibility()
         finally:
             self._updating_parameter_widgets = False
@@ -1027,6 +1067,8 @@ class SystemTab(QWidget):
             "telemetry_freshness_timeout_s": float(state.telemetry_freshness_timeout_s),
             "fine_jog_step_ticks": int(state.fine_jog_step_ticks),
             "coarse_jog_step_ticks": int(state.coarse_jog_step_ticks),
+            "servo_profile_velocity": int(state.servo_profile_velocity),
+            "servo_profile_acceleration": int(state.servo_profile_acceleration),
         }
 
     def _current_parameter_values(self) -> dict[str, object]:
@@ -1045,6 +1087,8 @@ class SystemTab(QWidget):
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
             "fine_jog_step_ticks": int(self.fine_jog_step_spin.value()),
             "coarse_jog_step_ticks": int(self.coarse_jog_step_spin.value()),
+            "servo_profile_velocity": int(self.servo_profile_velocity_spin.value()),
+            "servo_profile_acceleration": int(self.servo_profile_acceleration_spin.value()),
         }
 
     @staticmethod

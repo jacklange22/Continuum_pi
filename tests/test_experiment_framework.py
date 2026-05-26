@@ -1788,6 +1788,8 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
 def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_explicit(tmp_path: Path) -> None:
     settings = _settings()
     servo_service = _ready_modeling_servo_service(tmp_path)
+    servo_service.dxl_bus.config.default_profile_velocity = 3
+    servo_service.dxl_bus.config.default_profile_acceleration = 1
     runner = ExperimentRunner(
         project_root=Path(__file__).resolve().parents[1],
         settings=settings,
@@ -1825,6 +1827,14 @@ def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_expli
     assert "mock_mode" in metrics["data_quality_warnings"]
     assert metrics["legacy_export_enabled"] is False
     assert metrics["position_frame"] == "none"
+    profile_push = metrics["servo_motion_profile_push"]
+    assert profile_push["verified"] is True
+    assert profile_push["profile_velocity"] == 3
+    assert profile_push["profile_acceleration"] == 1
+    assert profile_push["readback_by_servo"]["1"] == {
+        "profile_acceleration": 1,
+        "profile_velocity": 3,
+    }
     assert not result.paths.output_dir.joinpath("modeling_dataset_legacy_compat.dat").exists()
     export_rows = [
         json.loads(line)

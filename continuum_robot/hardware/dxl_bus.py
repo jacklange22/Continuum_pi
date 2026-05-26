@@ -474,6 +474,22 @@ class DxlBus:
             "profile acceleration",
         )
 
+    def read_profile_velocity(self, servo_id: int) -> int:
+        """Read Profile Velocity for verification after motion-profile writes."""
+        self._require_connected()
+        value, error = self._read4(int(servo_id), self.config.control_table["profile_velocity"])
+        if error is not None or value is None:
+            raise RuntimeError(f"Failed to read Profile Velocity for servo {servo_id}: {error}")
+        return int(value)
+
+    def read_profile_acceleration(self, servo_id: int) -> int:
+        """Read Profile Acceleration for verification after motion-profile writes."""
+        self._require_connected()
+        value, error = self._read4(int(servo_id), self.config.control_table["profile_acceleration"])
+        if error is not None or value is None:
+            raise RuntimeError(f"Failed to read Profile Acceleration for servo {servo_id}: {error}")
+        return int(value)
+
     def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
         """Explicitly set the torque enable state for one servo."""
         self._require_connected()

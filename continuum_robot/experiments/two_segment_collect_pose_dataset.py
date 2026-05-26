@@ -360,12 +360,32 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
 
     def execute(self, session: ExperimentSession) -> None:
         context = session.context.settings.robot.operating_context()
+        commanded_servo_ids = [
+            int(value)
+            for value in list(context.commanded_servo_ids or context.expected_servo_ids or [])
+        ]
         run_trust_mode = _run_trust_mode(self.config)
         role_configs = _effective_role_configs(session=session, config=self.config)
         tool_roles = _tool_roles_from_configs(role_configs)
         foundation = build_two_segment_foundation_metadata(context, tool_roles=tool_roles)
         startup_provenance = dict(self._startup_provenance)
         startup_provenance.setdefault("startup_ticks_by_servo", {str(key): int(value) for key, value in sorted(self._startup_ticks_by_servo.items())})
+        profile_push = {
+            "schema_version": "servo_motion_profile_push_v1",
+            "skipped": True,
+            "skip_reason": "dry_run",
+            "target_servo_ids": list(commanded_servo_ids),
+            "profile_velocity": getattr(session.context.servo_service.dxl_bus.config, "default_profile_velocity", None),
+            "profile_acceleration": getattr(session.context.servo_service.dxl_bus.config, "default_profile_acceleration", None),
+        }
+        if not self.config.dry_run:
+            profile_push = session.context.servo_service.apply_motion_profile(
+                commanded_servo_ids,
+                profile_velocity=getattr(session.context.servo_service.dxl_bus.config, "default_profile_velocity", None),
+                profile_acceleration=getattr(session.context.servo_service.dxl_bus.config, "default_profile_acceleration", None),
+                verify=True,
+            )
+        session.set_metric("servo_motion_profile_push", profile_push)
         # Long-run state
         continue_until_valid = bool(self.config.continue_until_valid_samples) and int(self.config.target_valid_sample_count or 0) > 0
         target_valid = int(self.config.target_valid_sample_count or 0)

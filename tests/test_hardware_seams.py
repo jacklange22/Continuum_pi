@@ -391,6 +391,28 @@ def test_dxl_bus_fake_sdk_scans_reads_and_writes() -> None:
     assert (1, 108, 20) in sdk._writes
 
 
+def test_dxl_bus_goal_write_pushes_default_motion_profile_registers() -> None:
+    sdk = _make_fake_sdk()
+    bus = DxlBus(
+        config={
+            "default_profile_velocity": 3,
+            "default_profile_acceleration": 1,
+        },
+        sdk_loader=lambda: sdk,
+    )
+
+    bus.connect("/dev/ttyUSB_OPENRB", 115200)
+    bus.write_goal_positions({1: 2100})
+
+    assert (1, 108, 1) in sdk._writes
+    assert (1, 112, 3) in sdk._writes
+    assert (1, 116, 2100) in sdk._writes
+    assert sdk._writes.index((1, 108, 1)) < sdk._writes.index((1, 112, 3))
+    assert sdk._writes.index((1, 112, 3)) < sdk._writes.index((1, 116, 2100))
+    assert bus.read_profile_acceleration(1) == 1
+    assert bus.read_profile_velocity(1) == 3
+
+
 def test_system_and_servo_controllers_use_hardware_seams(tmp_path: Path) -> None:
     settings = _hardware_settings()
     sdk = _make_fake_sdk()

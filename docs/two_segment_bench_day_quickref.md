@@ -100,6 +100,11 @@ physical_assembly_confirmed_by_operator: true
 # YAML, use ~400 ticks for ±0.25 cm and ~1600 ticks for ±1.00 cm.
 ```
 
+Before the first live command, the run writes Profile Acceleration/Velocity to
+all commanded servos and verifies readback. Check
+`servo_motion_profile_push` in the run metrics; the expected first-run profile is
+`profile_acceleration: 1`, `profile_velocity: 3`, `verified: true`.
+
 Set tracker roles in the GUI collect-pose page:
 - `distal_tip`: required for ANN training; usually 0A for the distal/top coil.
 - `intermediate_segment`: optional; use 0C if installed for two-coil labels.

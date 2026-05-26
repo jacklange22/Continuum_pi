@@ -843,6 +843,28 @@ def test_servo_service_single_segment_displacement_uses_position_mode_for_experi
     assert result.debug_entries_by_id[1].profile_acceleration is None
 
 
+def test_servo_service_apply_motion_profile_writes_and_verifies_readback(tmp_path: Path) -> None:
+    bus = _RecordingMotionConfigBus([1, 2, 3, 4])
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.apply_motion_profile(
+        [1, 2, 3, 4],
+        profile_velocity=3,
+        profile_acceleration=1,
+        verify=True,
+    )
+
+    assert result["verified"] is True
+    assert result["applied_servo_ids"] == [1, 2, 3, 4]
+    assert result["readback_by_servo"]["1"] == {
+        "profile_acceleration": 1,
+        "profile_velocity": 3,
+    }
+    assert bus.profile_acceleration_writes == [(1, 1), (2, 1), (3, 1), (4, 1)]
+    assert bus.profile_velocity_writes == [(1, 3), (2, 3), (3, 3), (4, 3)]
+
+
 def test_servo_service_current_aware_single_segment_motion_can_still_write_goal_current(tmp_path: Path) -> None:
     bus = _RecordingMotionConfigBus([1, 2, 3, 4])
     for telemetry in bus._state.values():

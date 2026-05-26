@@ -9671,6 +9671,33 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("remaining_complete_training_rows", int(target_valid_samples))
         session.set_metric("complete_training_target_reached", False)
         session.set_metric("last_dispatched_cable_command_cm", list(zero_vector))
+        servo_service = session.context.servo_service
+        effective_profile_velocity = (
+            self.config.profile_velocity_ticks_per_s
+            if self.config.profile_velocity_ticks_per_s is not None
+            else getattr(servo_service.dxl_bus.config, "default_profile_velocity", None)
+        )
+        effective_profile_acceleration = (
+            self.config.profile_acceleration
+            if self.config.profile_acceleration is not None
+            else getattr(servo_service.dxl_bus.config, "default_profile_acceleration", None)
+        )
+        profile_push = {
+            "schema_version": "servo_motion_profile_push_v1",
+            "skipped": True,
+            "skip_reason": "dry_run_or_disconnected",
+            "target_servo_ids": list(servo_ids),
+            "profile_velocity": effective_profile_velocity,
+            "profile_acceleration": effective_profile_acceleration,
+        }
+        if not self.config.dry_run and bool(getattr(servo_service, "is_connected", False)):
+            profile_push = servo_service.apply_motion_profile(
+                list(servo_ids),
+                profile_velocity=effective_profile_velocity,
+                profile_acceleration=effective_profile_acceleration,
+                verify=True,
+            )
+        session.set_metric("servo_motion_profile_push", profile_push)
         session.set_metric(
             "active_segment",
             {

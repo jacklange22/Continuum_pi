@@ -74,6 +74,10 @@ class MockDxlBus(DxlBus):
             telemetry = self._state.setdefault(servo_id, ServoTelemetry(servo_id=servo_id))
             current = 120 + min(600, abs(goal - (telemetry.present_position or goal)) // 4)
             telemetry.torque_enabled = True
+            if self.config.default_profile_acceleration is not None:
+                telemetry.profile_acceleration = int(self.config.default_profile_acceleration)
+            if self.config.default_profile_velocity is not None:
+                telemetry.profile_velocity = int(self.config.default_profile_velocity)
             telemetry.present_position = int(goal)
             telemetry.present_current_ma = current
             telemetry.present_current_raw_unit = int(current)
@@ -101,6 +105,18 @@ class MockDxlBus(DxlBus):
         telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))
         telemetry.profile_acceleration = int(profile_acceleration)
         telemetry.last_read_monotonic_s = time.monotonic()
+
+    def read_profile_velocity(self, servo_id: int) -> int:
+        telemetry = self._state.get(int(servo_id))
+        if telemetry is None:
+            raise RuntimeError(f"Servo {servo_id} did not respond on the mock bus.")
+        return int(getattr(telemetry, "profile_velocity", 0) or 0)
+
+    def read_profile_acceleration(self, servo_id: int) -> int:
+        telemetry = self._state.get(int(servo_id))
+        if telemetry is None:
+            raise RuntimeError(f"Servo {servo_id} did not respond on the mock bus.")
+        return int(getattr(telemetry, "profile_acceleration", 0) or 0)
 
     def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
         telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))

@@ -1669,6 +1669,87 @@ class ServoService:
                 self._last_goal_positions_by_id[int(servo_id)] = int(goal)
                 self._last_goal_command_monotonic_s[int(servo_id)] = written_at
 
+    def apply_motion_profile(
+        self,
+        servo_ids: list[int],
+        *,
+        profile_velocity: int | None,
+        profile_acceleration: int | None,
+        verify: bool = True,
+    ) -> dict[str, Any]:
+        """Write Profile Velocity/Acceleration to servos and optionally verify readback."""
+        selected = sorted({int(value) for value in servo_ids})
+        velocity = None if profile_velocity in (None, "") else max(0, int(profile_velocity))
+        acceleration = None if profile_acceleration in (None, "") else max(0, int(profile_acceleration))
+        result: dict[str, Any] = {
+            "schema_version": "servo_motion_profile_push_v1",
+            "profile_velocity": velocity,
+            "profile_acceleration": acceleration,
+            "target_servo_ids": list(selected),
+            "applied_servo_ids": [],
+            "verified": False,
+            "readback_by_servo": {},
+            "skipped": False,
+            "write_order": "profile_acceleration_then_profile_velocity",
+        }
+        if not selected:
+            result["skipped"] = True
+            result["skip_reason"] = "no_servo_ids"
+            return result
+        if velocity is None and acceleration is None:
+            result["skipped"] = True
+            result["skip_reason"] = "no_profile_velocity_or_acceleration_configured"
+            return result
+        for servo_id in selected:
+            if acceleration is not None:
+                self._guard_bus_call(
+                    "write servo profile acceleration",
+                    lambda sid=int(servo_id), value=int(acceleration): self.dxl_bus.write_profile_acceleration(
+                        sid,
+                        value,
+                    ),
+                )
+            if velocity is not None:
+                self._guard_bus_call(
+                    "write servo profile velocity",
+                    lambda sid=int(servo_id), value=int(velocity): self.dxl_bus.write_profile_velocity(
+                        sid,
+                        value,
+                    ),
+                )
+            result["applied_servo_ids"].append(int(servo_id))
+        if not verify:
+            result["verified"] = False
+            result["verification_skipped"] = True
+            return result
+        for servo_id in selected:
+            readback: dict[str, int] = {}
+            if acceleration is not None:
+                read_acc = self._guard_bus_call(
+                    "read servo profile acceleration",
+                    lambda sid=int(servo_id): self.dxl_bus.read_profile_acceleration(sid),
+                )
+                readback["profile_acceleration"] = int(read_acc)
+                if int(read_acc) != int(acceleration):
+                    raise RuntimeError(
+                        f"Servo {servo_id} Profile Acceleration readback mismatch: "
+                        f"expected {acceleration}, got {read_acc}."
+                    )
+            if velocity is not None:
+                read_vel = self._guard_bus_call(
+                    "read servo profile velocity",
+                    lambda sid=int(servo_id): self.dxl_bus.read_profile_velocity(sid),
+                )
+                readback["profile_velocity"] = int(read_vel)
+                if int(read_vel) != int(velocity):
+                    raise RuntimeError(
+                        f"Servo {servo_id} Profile Velocity readback mismatch: "
+                        f"expected {velocity}, got {read_vel}."
+                    )
+            result["readback_by_servo"][str(int(servo_id))] = readback
+        result["verified"] = True
+        return result
+
     def _write_servo_id(self, current_id: int, new_id: int) -> None:
         self._guard_bus_call(
             "write servo ID",

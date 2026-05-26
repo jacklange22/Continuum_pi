@@ -408,6 +408,8 @@ def test_two_segment_collect_pose_dataset_sample_records_distal_pose_role_and_va
     settings = _settings()
     settings.runtime.mock_mode = False
     service = _servo_service(tmp_path, settings=settings)
+    service.dxl_bus.config.default_profile_velocity = 3
+    service.dxl_bus.config.default_profile_acceleration = 1
     _save_all8_startup(service)
     runner = _runner(
         tmp_path,
@@ -435,6 +437,15 @@ def test_two_segment_collect_pose_dataset_sample_records_distal_pose_role_and_va
     assert metrics["distal_only"] is True
     assert metrics["includes_intermediate_pose"] is False
     assert metrics["pose_label_summary"]["available_roles"] == ["distal_tip"]
+    profile_push = metrics["servo_motion_profile_push"]
+    assert profile_push["verified"] is True
+    assert profile_push["profile_velocity"] == 3
+    assert profile_push["profile_acceleration"] == 1
+    assert sorted(int(value) for value in profile_push["readback_by_servo"]) == list(range(1, 9))
+    assert profile_push["readback_by_servo"]["8"] == {
+        "profile_acceleration": 1,
+        "profile_velocity": 3,
+    }
     sample_payload = json.loads(result.paths.samples_path.read_text(encoding="utf-8").splitlines()[0])
     assert sample_payload["extra"]["available_pose_roles"] == ["distal_tip"]
     assert sample_payload["extra"]["missing_required_pose_roles"] == []
