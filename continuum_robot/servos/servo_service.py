@@ -1669,6 +1669,29 @@ class ServoService:
                 self._last_goal_positions_by_id[int(servo_id)] = int(goal)
                 self._last_goal_command_monotonic_s[int(servo_id)] = written_at
 
+    def _write_manual_jog_goal_position(self, servo_id: int, goal_tick: int) -> None:
+        """Write a jog target with the faster manual-jog profile, then restore defaults."""
+        original_velocity = getattr(self.dxl_bus.config, "default_profile_velocity", None)
+        original_acceleration = getattr(self.dxl_bus.config, "default_profile_acceleration", None)
+        jog_velocity = getattr(self.dxl_bus.config, "manual_jog_profile_velocity", None)
+        jog_acceleration = getattr(self.dxl_bus.config, "manual_jog_profile_acceleration", None)
+        self._assert_bus_access(action="write manual jog goal position")
+        with self._bus_io_lock:
+            self._assert_bus_access(action="write manual jog goal position")
+            if jog_velocity not in (None, ""):
+                self.dxl_bus.config.default_profile_velocity = max(1, int(jog_velocity))
+            if jog_acceleration not in (None, ""):
+                self.dxl_bus.config.default_profile_acceleration = max(1, int(jog_acceleration))
+            try:
+                self.dxl_bus.write_goal_positions({int(servo_id): int(goal_tick)})
+            finally:
+                self.dxl_bus.config.default_profile_velocity = original_velocity
+                self.dxl_bus.config.default_profile_acceleration = original_acceleration
+        written_at = float(self._time_fn())
+        with self._bus_state_lock:
+            self._last_goal_positions_by_id[int(servo_id)] = int(goal_tick)
+            self._last_goal_command_monotonic_s[int(servo_id)] = written_at
+
     def apply_motion_profile(
         self,
         servo_ids: list[int],
@@ -3636,7 +3659,7 @@ class ServoService:
             raise RuntimeError(f"Servo {servo_id} position is unavailable.")
         goal = int(assessment.telemetry.present_position + delta_ticks)
         self._validate_goal_against_assessment(assessment, goal)
-        self._write_goal_positions({int(servo_id): goal})
+        self._write_manual_jog_goal_position(int(servo_id), goal)
         updated = self.read_live_telemetry([int(servo_id)])
         self._validate_post_motion(updated[int(servo_id)])
         return ServoCommandResult(
@@ -6469,7 +6492,7 @@ class ServoService:
         updated: ServoTelemetry | None = None
         updated_assessment: ServoMotionAssessment | None = None
         try:
-            self._write_goal_positions({int(plan.servo_id): int(plan.clamped_target_tick)})
+            self._write_manual_jog_goal_position(int(plan.servo_id), int(plan.clamped_target_tick))
             updated = self.read_live_telemetry([int(plan.servo_id)])[int(plan.servo_id)]
             self._validate_post_motion(updated)
             updated_assessment = self.assess_motion(

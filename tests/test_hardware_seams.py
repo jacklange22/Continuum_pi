@@ -295,6 +295,8 @@ def test_dxl_bus_config_preserves_single_segment_defaults_when_payload_is_partia
     assert config.single_segment_experiment_default_goal_current_ma is None
     assert config.single_segment_experiment_default_profile_velocity is None
     assert config.single_segment_experiment_default_profile_acceleration is None
+    assert config.manual_jog_profile_velocity == 80
+    assert config.manual_jog_profile_acceleration == 20
     assert config.single_segment_current_aware_preferred_operating_mode == 5
     assert config.single_segment_current_aware_allowed_operating_modes == [3, 5]
     assert config.single_segment_current_aware_default_goal_current_ma == 850

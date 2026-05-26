@@ -91,6 +91,8 @@ class DxlBusConfig:
     require_fresh_telemetry_for_motion: bool = True
     default_profile_velocity: int | None = None
     default_profile_acceleration: int | None = None
+    manual_jog_profile_velocity: int | None = 80
+    manual_jog_profile_acceleration: int | None = 20
     single_segment_auto_configure_motion_defaults: bool = True
     single_segment_experiment_preferred_operating_mode: int = 3
     single_segment_experiment_allowed_operating_modes: list[int] = field(default_factory=lambda: [3])
@@ -216,6 +218,14 @@ class DxlBusConfig:
                 int(payload["default_profile_acceleration"])
                 if payload.get("default_profile_acceleration") not in (None, "")
                 else None
+            ),
+            manual_jog_profile_velocity=_optional_int(
+                "manual_jog_profile_velocity",
+                defaults.manual_jog_profile_velocity,
+            ),
+            manual_jog_profile_acceleration=_optional_int(
+                "manual_jog_profile_acceleration",
+                defaults.manual_jog_profile_acceleration,
             ),
             single_segment_auto_configure_motion_defaults=bool(
                 payload.get(

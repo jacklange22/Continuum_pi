@@ -120,6 +120,10 @@ dynamixel_settings:
   # goal-position write. Set null to leave firmware profile untouched.
   default_profile_velocity: 3
   default_profile_acceleration: 1
+  # Manual jogs are intentionally faster so fine/coarse jog reaches small
+  # pretension targets reliably.
+  manual_jog_profile_velocity: 80
+  manual_jog_profile_acceleration: 20
   single_segment_auto_configure_motion_defaults: true
   single_segment_experiment_preferred_operating_mode: 3
   single_segment_experiment_allowed_operating_modes: [3]

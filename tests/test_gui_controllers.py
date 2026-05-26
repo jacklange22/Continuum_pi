@@ -733,18 +733,17 @@ def test_system_tab_save_jog_settings_includes_fine_and_coarse_ticks(tmp_path: P
     received: list[dict] = []
     tab = SystemTab(system_controller, apply_runtime_parameters=lambda **kwargs: received.append(dict(kwargs)))
 
+    assert not hasattr(tab, "apply_servo_profile_button")
     tab.update(system_controller.refresh())
     tab.fine_jog_step_spin.setValue(7)
     tab.coarse_jog_step_spin.setValue(31)
-    tab.servo_profile_velocity_spin.setValue(2)
-    tab.servo_profile_acceleration_spin.setValue(1)
+    tab.servo_profile_speed_spin.setValue(2)
     tab.save_parameters_button.click()
 
     assert received, "expected save callback to fire"
     assert received[-1]["fine_jog_step_ticks"] == 7
     assert received[-1]["coarse_jog_step_ticks"] == 31
-    assert received[-1]["servo_profile_velocity"] == 2
-    assert received[-1]["servo_profile_acceleration"] == 1
+    assert received[-1]["servo_profile_speed"] == 2
 
 
 def test_servos_controller_refresh_selected_servo_preserves_cached_state_when_bus_busy(tmp_path: Path) -> None:
@@ -1026,6 +1025,10 @@ def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> N
         assert state.openrb_connected is True
         assert state.openrb_prepared is True
         assert state.dynamixel_connected is True
+        assert "verified" in state.servo_motion_profile_status
+        for servo_id in [1, 2, 3, 4]:
+            assert servo_service.dxl_bus.read_profile_velocity(servo_id) == 3
+            assert servo_service.dxl_bus.read_profile_acceleration(servo_id) == 1
     finally:
         controller.disconnect_tracker()
         controller.disconnect_openrb()
@@ -1042,10 +1045,9 @@ def test_system_controller_pushes_servo_motion_profile_to_connected_servos(tmp_p
         settings=settings,
     )
 
-    state = controller.apply_servo_motion_profile(profile_velocity=2, profile_acceleration=1)
+    state = controller.apply_servo_motion_profile(profile_speed=2)
 
-    assert state.servo_profile_velocity == 2
-    assert state.servo_profile_acceleration == 1
+    assert state.servo_profile_speed == 2
     assert "verified" in state.servo_motion_profile_status
     assert service.dxl_bus.config.default_profile_velocity == 2
     assert service.dxl_bus.config.default_profile_acceleration == 1
@@ -1386,8 +1388,7 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
         poll_rate_hz=20,
         fine_jog_step_ticks=3,
         coarse_jog_step_ticks=15,
-        servo_profile_velocity=2,
-        servo_profile_acceleration=1,
+        servo_profile_speed=2,
         position_min_offset_ticks=-120,
         position_max_offset_ticks=140,
         software_position_margin_ticks=32,

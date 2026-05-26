@@ -1311,6 +1311,30 @@ def test_servo_service_directional_jog_uses_canonical_raw_position_convention(tm
     assert loosen.delta_ticks == 5
 
 
+def test_servo_service_manual_jog_uses_fast_profile_without_changing_default_profile(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus.config.default_profile_velocity = 3
+    bus.config.default_profile_acceleration = 1
+    bus.config.manual_jog_profile_velocity = 80
+    bus.config.manual_jog_profile_acceleration = 20
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-20,
+        max_offset_ticks=20,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.jog_servo(1, 5)
+
+    assert result.positions_by_id[1] == bus._state[1].present_position
+    assert bus._state[1].profile_velocity == 80
+    assert bus._state[1].profile_acceleration == 20
+    assert bus.config.default_profile_velocity == 3
+    assert bus.config.default_profile_acceleration == 1
+
+
 def test_servo_service_move_servo_to_raw_target_refreshes_limits_when_live_snapshot_is_partial(tmp_path: Path) -> None:
     bus = MockDxlBus([1])
     bus._state[1].torque_enabled = True

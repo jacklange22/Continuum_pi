@@ -84,8 +84,7 @@ class SystemViewState:
     servo_telemetry_bottleneck_summary: str = ""
     fine_jog_step_ticks: int = 5
     coarse_jog_step_ticks: int = 25
-    servo_profile_velocity: int = 3
-    servo_profile_acceleration: int = 1
+    servo_profile_speed: int = 3
     servo_motion_profile_status: str = "Servo motion profile not pushed this session."
     position_min_offset_ticks: int = -600
     position_max_offset_ticks: int = 600
@@ -152,15 +151,10 @@ class SystemController:
             servo_telemetry_bottleneck_summary="",
             fine_jog_step_ticks=settings.safety.fine_jog_step_ticks,
             coarse_jog_step_ticks=settings.safety.coarse_jog_step_ticks,
-            servo_profile_velocity=self._initial_profile_register(
+            servo_profile_speed=self._initial_profile_register(
                 settings,
                 key="default_profile_velocity",
                 fallback=3,
-            ),
-            servo_profile_acceleration=self._initial_profile_register(
-                settings,
-                key="default_profile_acceleration",
-                fallback=1,
             ),
             position_min_offset_ticks=settings.safety.position_min_offset_ticks,
             position_max_offset_ticks=settings.safety.position_max_offset_ticks,
@@ -196,18 +190,17 @@ class SystemController:
     def apply_servo_motion_profile(
         self,
         *,
-        profile_velocity: int,
-        profile_acceleration: int,
+        profile_speed: int,
     ) -> SystemViewState:
         """Push the configured DYNAMIXEL motion profile to the active servo scope."""
-        velocity = max(1, int(profile_velocity))
-        acceleration = max(1, int(profile_acceleration))
-        self.state.servo_profile_velocity = int(velocity)
-        self.state.servo_profile_acceleration = int(acceleration)
+        velocity, acceleration = self._profile_registers_from_speed(profile_speed)
+        self.state.servo_profile_speed = int(profile_speed)
         self.settings.serial.dynamixel_settings["default_profile_velocity"] = int(velocity)
         self.settings.serial.dynamixel_settings["default_profile_acceleration"] = int(acceleration)
-        self.servo_service.dxl_bus.config.default_profile_velocity = int(velocity)
-        self.servo_service.dxl_bus.config.default_profile_acceleration = int(acceleration)
+        bus_config = getattr(getattr(self.servo_service, "dxl_bus", None), "config", None)
+        if bus_config is not None:
+            bus_config.default_profile_velocity = int(velocity)
+            bus_config.default_profile_acceleration = int(acceleration)
         target_ids = [
             int(value)
             for value in list(
@@ -217,7 +210,7 @@ class SystemController:
         ]
         if not self.servo_service.is_connected:
             self.state.servo_motion_profile_status = (
-                f"Profile defaults set to velocity={velocity}, acceleration={acceleration}; "
+                f"Speed {int(profile_speed)} prepared as velocity={velocity}, acceleration={acceleration}; "
                 "connect OpenRB to push them to servos."
             )
             self.state.status_message = self.state.servo_motion_profile_status
@@ -232,7 +225,8 @@ class SystemController:
             )
             applied = [int(value) for value in list(result.get("applied_servo_ids", []) or [])]
             self.state.servo_motion_profile_status = (
-                f"Profile velocity={velocity}, acceleration={acceleration} verified on servos {applied}."
+                f"Speed {int(profile_speed)} verified as velocity={velocity}, "
+                f"acceleration={acceleration} on servos {applied}."
             )
             self.state.status_message = self.state.servo_motion_profile_status
             self.state.last_error = None
@@ -407,7 +401,14 @@ class SystemController:
             )
             self.state.last_error = str(exc)
             self.state.status_message = f"OpenRB connect failed: {exc}"
-        self.refresh_readiness()
+        if self.servo_service.is_connected and self.state.last_error is None:
+            self.refresh_readiness()
+            expected_ids = {int(value) for value in list(self.state.expected_servo_ids or [])}
+            detected_ids = {int(value) for value in list(self.state.detected_servo_ids or [])}
+            if expected_ids and expected_ids.issubset(detected_ids):
+                self.apply_servo_motion_profile(profile_speed=int(self.state.servo_profile_speed))
+        else:
+            self.refresh_readiness()
 
     def _best_effort_disconnect_after_failed_openrb_candidate(self) -> None:
         try:
@@ -718,13 +719,9 @@ class SystemController:
         self.state.operating_mode = context.operating_mode
         self.state.selected_servo_id = int(context.selected_servo_id or self.settings.robot.selected_servo_id or 1)
         self.state.expected_servo_ids = list(context.expected_servo_ids)
-        self.state.servo_profile_velocity = self._current_profile_register(
+        self.state.servo_profile_speed = self._current_profile_register(
             key="default_profile_velocity",
-            fallback=self.state.servo_profile_velocity,
-        )
-        self.state.servo_profile_acceleration = self._current_profile_register(
-            key="default_profile_acceleration",
-            fallback=self.state.servo_profile_acceleration,
+            fallback=self.state.servo_profile_speed,
         )
         self.state.active_segment_key = self.settings.robot.active_segment_key()
         self.state.active_segment_label = self.settings.robot.active_segment_label()
@@ -1127,8 +1124,7 @@ class SystemController:
         poll_rate_hz: int,
         fine_jog_step_ticks: int | None = None,
         coarse_jog_step_ticks: int | None = None,
-        servo_profile_velocity: int | None = None,
-        servo_profile_acceleration: int | None = None,
+        servo_profile_speed: int | None = None,
         position_min_offset_ticks: int | None = None,
         position_max_offset_ticks: int | None = None,
         software_position_margin_ticks: int | None = None,
@@ -1153,20 +1149,16 @@ class SystemController:
                 raise ValueError("Jog increments must be positive.")
             if resolved_fine_jog > resolved_coarse_jog:
                 raise ValueError("Fine jog increment must be less than or equal to coarse jog increment.")
-            resolved_profile_velocity = (
-                self.state.servo_profile_velocity
-                if servo_profile_velocity is None
-                else int(servo_profile_velocity)
+            resolved_profile_speed = (
+                self.state.servo_profile_speed
+                if servo_profile_speed is None
+                else int(servo_profile_speed)
             )
-            resolved_profile_acceleration = (
-                self.state.servo_profile_acceleration
-                if servo_profile_acceleration is None
-                else int(servo_profile_acceleration)
+            if resolved_profile_speed <= 0:
+                raise ValueError("Servo speed must be positive.")
+            resolved_profile_velocity, resolved_profile_acceleration = self._profile_registers_from_speed(
+                resolved_profile_speed
             )
-            if resolved_profile_velocity <= 0:
-                raise ValueError("Servo profile velocity must be positive.")
-            if resolved_profile_acceleration <= 0:
-                raise ValueError("Servo profile acceleration must be positive.")
             resolved_min_offset = (
                 self.state.position_min_offset_ticks
                 if position_min_offset_ticks is None
@@ -1339,10 +1331,9 @@ class SystemController:
             self.state.figure_output_quality = resolved_figure_quality
             self.state.fine_jog_step_ticks = int(resolved_fine_jog)
             self.state.coarse_jog_step_ticks = int(resolved_coarse_jog)
-            self.state.servo_profile_velocity = int(resolved_profile_velocity)
-            self.state.servo_profile_acceleration = int(resolved_profile_acceleration)
+            self.state.servo_profile_speed = int(resolved_profile_speed)
             self.state.servo_motion_profile_status = (
-                f"Profile defaults saved as velocity={resolved_profile_velocity}, "
+                f"Speed {resolved_profile_speed} saved as velocity={resolved_profile_velocity}, "
                 f"acceleration={resolved_profile_acceleration}."
             )
             self.state.position_min_offset_ticks = int(resolved_min_offset)
@@ -1362,6 +1353,17 @@ class SystemController:
             if bus_config is not None:
                 bus_config.default_profile_velocity = int(resolved_profile_velocity)
                 bus_config.default_profile_acceleration = int(resolved_profile_acceleration)
+            if self.servo_service.is_connected:
+                self.servo_service.apply_motion_profile(
+                    list(context.commanded_servo_ids or context.expected_servo_ids),
+                    profile_velocity=int(resolved_profile_velocity),
+                    profile_acceleration=int(resolved_profile_acceleration),
+                    verify=True,
+                )
+                self.state.servo_motion_profile_status = (
+                    f"Speed {resolved_profile_speed} saved and verified as "
+                    f"velocity={resolved_profile_velocity}, acceleration={resolved_profile_acceleration}."
+                )
             self.settings.robot = robot
             self._apply_robot_config_to_servo_context(robot)
             LOG.info(
@@ -1511,8 +1513,7 @@ class SystemController:
             f"GUI refresh rate: {self.state.poll_rate_hz} Hz\n"
             f"Servo telemetry cadence: {self.state.servo_telemetry_cadence_summary}\n"
             f"Fine/coarse jog: {self.state.fine_jog_step_ticks}/{self.state.coarse_jog_step_ticks} ticks\n"
-            f"Servo profile velocity/acceleration: "
-            f"{self.state.servo_profile_velocity}/{self.state.servo_profile_acceleration}\n"
+            f"Servo speed: {self.state.servo_profile_speed}\n"
             f"Servo profile status: {self.state.servo_motion_profile_status}\n"
             f"Application bounds metadata: {self.state.position_min_offset_ticks}/{self.state.position_max_offset_ticks} ticks\n"
             f"Software margin: {self.state.software_position_margin_ticks} ticks\n"
@@ -1562,6 +1563,11 @@ class SystemController:
         if raw in (None, ""):
             return int(fallback)
         return max(1, int(raw))
+
+    @staticmethod
+    def _profile_registers_from_speed(speed: int) -> tuple[int, int]:
+        resolved = max(1, int(speed))
+        return resolved, max(1, int((resolved + 3) // 4))
 
     def _current_profile_register(self, *, key: str, fallback: int) -> int:
         config_key = str(key)

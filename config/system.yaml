@@ -82,12 +82,11 @@ dynamixel_settings:
   require_voltage_for_motion: true
   require_temperature_for_motion: true
   require_fresh_telemetry_for_motion: true
-  # Global slow-down for ALL goal-position writes (jog, pretension, etc.).
+  # Global slow-down for experiment / babble goal-position writes.
   # dxl_bus.write_goal_positions writes these registers before every
-  # goal-position command, so setting them once here applies to every motion
-  # path until power cycle. Keeping the rotor speed and (especially)
+  # goal-position command. Keeping the rotor speed and (especially)
   # acceleration low reduces peak motor current spikes on take-up against
-  # tendon load and makes manual jog feel deliberate rather than jumpy.
+  # tendon load during large babble transitions.
   #
   # Units (XC330-M288-T):
   #   profile_velocity:     N * 0.229 rev/min  (5 -> ~1.1 rev/min ≈ 6.9 deg/sec)
@@ -106,6 +105,11 @@ dynamixel_settings:
   # 12-hour unattended runs.
   default_profile_velocity: 3
   default_profile_acceleration: 1
+  # Manual jogs use a separate fast profile for reliable small moves during
+  # pretension. The slow experiment profile is restored in software after each
+  # jog write; later experiment writes push 3/1 again before moving.
+  manual_jog_profile_velocity: 80
+  manual_jog_profile_acceleration: 20
   single_segment_auto_configure_motion_defaults: true
   single_segment_experiment_preferred_operating_mode: 3
   single_segment_experiment_allowed_operating_modes: [3]
