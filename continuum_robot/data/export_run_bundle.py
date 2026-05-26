@@ -46,19 +46,24 @@ CORE_FILENAMES = {
     "two_segment_repeatability_summary.txt",
     "two_segment_repeatability_scatter_metrics.json",
     "two_segment_repeatability_per_target.csv",
-    # Two-segment workspace repeatability (200×20 protocol).
+    # Two-segment workspace repeatability (200×20 protocol). Filenames
+    # match the single-segment workspace_repeatability_map shape (so the
+    # Data tab + export + analysis tools recognise the run) plus
+    # two-segment-specific extras.
     "two_segment_workspace_repeatability_summary.txt",
+    "workspace_map_summary.json",
+    "workspace_map_visits.jsonl",
+    "workspace_map_per_target.csv",
+    "thesis_01_workspace_rms_3d.png",
+    "thesis_02_workspace_rms_map.png",
+    "thesis_03_rms_vs_amplitude.png",
+    "thesis_04_2d_repeatability_map.png",
     "repeatability_targets.json",
     "repeatability_visit_plan.csv",
-    "repeatability_metrics.json",
     "repeatability_metrics.csv",
     "per_target_repeatability.csv",
     "target_captures.csv",
     "failure_events.jsonl",
-    "two_segment_thesis_01_workspace_rms_3d.png",
-    "two_segment_thesis_02_workspace_rms_map.png",
-    "two_segment_thesis_03_rms_vs_amplitude.png",
-    "two_segment_thesis_04_2d_repeatability_map.png",
     # Two-segment penprobe lookup demo (DEMO ONLY) — map + demo run.
     "two_segment_workspace_lookup_map.json",
     "two_segment_workspace_lookup_points.csv",

@@ -15,28 +15,28 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 
-# Canonical filenames (the validator + export both look up these literal names).
+# Canonical artifact filenames. The single-segment ``workspace_repeatability_map``
+# uses ``workspace_map_*`` + ``thesis_0*_workspace_*`` names, so the
+# two-segment artifacts use the IDENTICAL names — same Data tab / export /
+# validator surface. Two-segment-specific extras are added alongside.
+WORKSPACE_MAP_SUMMARY_JSON = "workspace_map_summary.json"
+WORKSPACE_MAP_VISITS_JSONL = "workspace_map_visits.jsonl"
+WORKSPACE_MAP_PER_TARGET_CSV = "workspace_map_per_target.csv"
+THESIS_01_PNG = "thesis_01_workspace_rms_3d.png"
+THESIS_02_PNG = "thesis_02_workspace_rms_map.png"
+THESIS_03_PNG = "thesis_03_rms_vs_amplitude.png"
+THESIS_04_PNG = "thesis_04_2d_repeatability_map.png"
+
+# Two-segment-specific extras (no single-segment equivalent).
 TARGETS_JSON = "repeatability_targets.json"
 VISIT_PLAN_CSV = "repeatability_visit_plan.csv"
 TARGET_CAPTURES_CSV = "target_captures.csv"
-REPEATABILITY_METRICS_JSON = "repeatability_metrics.json"
-REPEATABILITY_METRICS_CSV = "repeatability_metrics.csv"
 PER_TARGET_REPEATABILITY_CSV = "per_target_repeatability.csv"
+REPEATABILITY_METRICS_CSV = "repeatability_metrics.csv"
 FAILURE_EVENTS_JSONL = "failure_events.jsonl"
 SUMMARY_TXT = "two_segment_workspace_repeatability_summary.txt"
 
-# Thesis figures (same naming as single-segment workspace_repeatability_map).
-TS_THESIS_01_PNG = "two_segment_thesis_01_workspace_rms_3d.png"
-TS_THESIS_02_PNG = "two_segment_thesis_02_workspace_rms_map.png"
-TS_THESIS_03_PNG = "two_segment_thesis_03_rms_vs_amplitude.png"
-TS_THESIS_04_PNG = "two_segment_thesis_04_2d_repeatability_map.png"
-
-THESIS_FIGURE_FILENAMES = (
-    TS_THESIS_01_PNG,
-    TS_THESIS_02_PNG,
-    TS_THESIS_03_PNG,
-    TS_THESIS_04_PNG,
-)
+THESIS_FIGURE_FILENAMES = (THESIS_01_PNG, THESIS_02_PNG, THESIS_03_PNG, THESIS_04_PNG)
 
 
 # ---------------------------------------------------------------------------
@@ -143,13 +143,34 @@ def summarize_workspace_repeatability(
     *,
     minimum_repeats_per_target: int,
     target_distal_rms_threshold_mm: float | None = None,
+    thesis_goal_rms_mm: float | None = None,
 ) -> dict[str, Any]:
-    """Roll up per-target rows into the overall repeatability summary."""
+    """Roll up per-target rows into the overall repeatability summary.
+
+    Key names match the single-segment ``workspace_repeatability_map``
+    contract (``workspace_rms_mean_mm`` / ``workspace_rms_max_mm`` /
+    ``workspace_rms_p95_mm`` / ``targets_with_data`` / ``worst_targets``)
+    so the Data tab + downstream tools recognize the shape; we add a
+    handful of two-segment-aware extras alongside.
+    """
     rows_with_data = [row for row in per_target_rows if row.get("rms_spread_mm") is not None]
+    goal_mm = float(thesis_goal_rms_mm) if thesis_goal_rms_mm is not None else (
+        float(target_distal_rms_threshold_mm) if target_distal_rms_threshold_mm is not None else None
+    )
     if not rows_with_data:
         return {
-            "planned_target_count": int(len(per_target_rows)),
-            "targets_with_repeats": 0,
+            # Single-segment-compatible keys (operator + Data tab look for these).
+            "target_count": int(len(per_target_rows)),
+            "targets_with_data": 0,
+            "workspace_rms_mean_mm": None,
+            "workspace_rms_median_mm": None,
+            "workspace_rms_p95_mm": None,
+            "workspace_rms_max_mm": None,
+            "workspace_max_spread_max_mm": None,
+            "thesis_goal_rms_mm": goal_mm,
+            "fraction_above_thesis_goal": None,
+            "worst_targets": [],
+            # Two-segment-specific bookkeeping.
             "targets_below_minimum_repeats": int(len(per_target_rows)),
             "minimum_repeats_per_target": int(minimum_repeats_per_target),
             "overall_distal_rms_mm": None,
@@ -164,6 +185,7 @@ def summarize_workspace_repeatability(
             "targets_above_threshold": None,
         }
     rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows_with_data])
+    max_radial = np.asarray([float(row.get("max_radial_mm") or 0.0) for row in rows_with_data])
     repeats = np.asarray([int(row.get("accepted_repeats", 0)) for row in rows_with_data])
     weighted_rms = float(np.sqrt(np.sum((rms_values ** 2) * repeats) / max(1, np.sum(repeats))))
     median_rms = float(np.median(rms_values))
@@ -176,9 +198,34 @@ def summarize_workspace_repeatability(
     targets_above_threshold: int | None = None
     if target_distal_rms_threshold_mm is not None:
         targets_above_threshold = int(np.sum(rms_values > float(target_distal_rms_threshold_mm)))
+    fraction_above_goal: float | None = None
+    if goal_mm is not None:
+        fraction_above_goal = float(np.sum(rms_values > goal_mm) / float(len(rms_values)))
+    # Top-5 worst targets by RMS (id, rms, accepted_repeats).
+    worst_order = np.argsort(-rms_values)
+    worst_targets: list[dict[str, Any]] = [
+        {
+            "target_id": str(rows_with_data[int(idx)].get("target_id", "")),
+            "rms_spread_mm": float(rms_values[int(idx)]),
+            "accepted_repeats": int(rows_with_data[int(idx)].get("accepted_repeats", 0)),
+            "amplitude_cm": float(rows_with_data[int(idx)].get("amplitude_cm") or 0.0),
+            "group_tag": str(rows_with_data[int(idx)].get("group_tag", "")),
+        }
+        for idx in worst_order[: min(5, len(worst_order))]
+    ]
     return {
-        "planned_target_count": int(len(per_target_rows)),
-        "targets_with_repeats": int(len(rows_with_data)),
+        # Single-segment-compatible keys.
+        "target_count": int(len(per_target_rows)),
+        "targets_with_data": int(len(rows_with_data)),
+        "workspace_rms_mean_mm": float(np.mean(rms_values)),
+        "workspace_rms_median_mm": float(median_rms),
+        "workspace_rms_p95_mm": float(p95_rms),
+        "workspace_rms_max_mm": float(rms_values[worst_idx]),
+        "workspace_max_spread_max_mm": float(np.max(max_radial)) if max_radial.size else None,
+        "thesis_goal_rms_mm": goal_mm,
+        "fraction_above_thesis_goal": fraction_above_goal,
+        "worst_targets": worst_targets,
+        # Two-segment-specific bookkeeping.
         "targets_below_minimum_repeats": int(below_min),
         "minimum_repeats_per_target": int(minimum_repeats_per_target),
         "overall_distal_rms_mm": float(weighted_rms),
@@ -223,37 +270,42 @@ def write_two_segment_workspace_repeatability_outputs(
 
     paths: dict[str, Path] = {}
 
-    # targets json
-    paths["targets_json"] = output_dir / TARGETS_JSON
-    paths["targets_json"].write_text(
-        json.dumps({"schema_version": "two_segment_workspace_repeatability_targets_v1", "targets": target_dicts}, indent=2),
-        encoding="utf-8",
-    )
-
-    # visit plan csv (synthesized from visit results)
-    paths["visit_plan_csv"] = _write_visit_plan_csv(output_dir / VISIT_PLAN_CSV, visit_dicts)
-
-    # target captures csv
-    paths["target_captures_csv"] = _write_target_captures_csv(output_dir / TARGET_CAPTURES_CSV, visit_dicts)
-
-    # per-target csv
-    paths["per_target_csv"] = _write_per_target_csv(
-        output_dir / PER_TARGET_REPEATABILITY_CSV, per_target_rows
-    )
-
-    # metrics json + csv
-    paths["metrics_json"] = output_dir / REPEATABILITY_METRICS_JSON
-    paths["metrics_json"].write_text(
+    # ---- Canonical single-segment-shape outputs --------------------------
+    # These three filenames match `workspace_repeatability_map_outputs` so
+    # the existing Data tab + export + analysis tools recognise the run.
+    paths["workspace_map_summary_json"] = output_dir / WORKSPACE_MAP_SUMMARY_JSON
+    paths["workspace_map_summary_json"].write_text(
         json.dumps(
             {
-                "schema_version": "two_segment_workspace_repeatability_metrics_v1",
+                "schema_version": "two_segment_workspace_repeatability_summary_v1",
                 "summary": summary,
-                "per_target": per_target_rows,
+                "per_target_rows": per_target_rows,
             },
             indent=2,
             default=_json_default,
         ),
         encoding="utf-8",
+    )
+    paths["workspace_map_visits_jsonl"] = _write_workspace_map_visits_jsonl(
+        output_dir / WORKSPACE_MAP_VISITS_JSONL, visit_dicts
+    )
+    paths["workspace_map_per_target_csv"] = _write_workspace_map_per_target_csv(
+        output_dir / WORKSPACE_MAP_PER_TARGET_CSV, per_target_rows
+    )
+
+    # ---- Two-segment-specific extras -------------------------------------
+    paths["targets_json"] = output_dir / TARGETS_JSON
+    paths["targets_json"].write_text(
+        json.dumps(
+            {"schema_version": "two_segment_workspace_repeatability_targets_v1", "targets": target_dicts},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    paths["visit_plan_csv"] = _write_visit_plan_csv(output_dir / VISIT_PLAN_CSV, visit_dicts)
+    paths["target_captures_csv"] = _write_target_captures_csv(output_dir / TARGET_CAPTURES_CSV, visit_dicts)
+    paths["per_target_csv"] = _write_per_target_csv(
+        output_dir / PER_TARGET_REPEATABILITY_CSV, per_target_rows
     )
     paths["metrics_csv"] = _write_metrics_summary_csv(output_dir / REPEATABILITY_METRICS_CSV, summary)
 
@@ -279,7 +331,7 @@ def write_two_segment_workspace_repeatability_outputs(
         rows_with_data = [row for row in per_target_rows if row.get("rms_spread_mm") is not None]
         if rows_with_data:
             paths["thesis_01"] = _write_thesis_01(
-                output_dir / TS_THESIS_01_PNG,
+                output_dir / THESIS_01_PNG,
                 rows_with_data=rows_with_data,
                 summary=summary,
                 max_amplitude_mm=max_amplitude_mm,
@@ -288,7 +340,7 @@ def write_two_segment_workspace_repeatability_outputs(
                 style_axes=style_axes,
             )
             paths["thesis_02"] = _write_thesis_02(
-                output_dir / TS_THESIS_02_PNG,
+                output_dir / THESIS_02_PNG,
                 rows_with_data=rows_with_data,
                 summary=summary,
                 max_amplitude_mm=max_amplitude_mm,
@@ -297,7 +349,7 @@ def write_two_segment_workspace_repeatability_outputs(
                 style_axes=style_axes,
             )
             paths["thesis_03"] = _write_thesis_03(
-                output_dir / TS_THESIS_03_PNG,
+                output_dir / THESIS_03_PNG,
                 rows_with_data=rows_with_data,
                 summary=summary,
                 max_amplitude_mm=max_amplitude_mm,
@@ -306,7 +358,7 @@ def write_two_segment_workspace_repeatability_outputs(
                 style_axes=style_axes,
             )
             paths["thesis_04"] = _write_thesis_04(
-                output_dir / TS_THESIS_04_PNG,
+                output_dir / THESIS_04_PNG,
                 rows_with_data=rows_with_data,
                 summary=summary,
                 max_amplitude_mm=max_amplitude_mm,
@@ -324,6 +376,117 @@ def write_two_segment_workspace_repeatability_outputs(
 # ---------------------------------------------------------------------------
 # CSV / JSON writers
 # ---------------------------------------------------------------------------
+
+
+def _write_workspace_map_visits_jsonl(path: Path, visit_dicts: Sequence[Mapping[str, Any]]) -> Path:
+    """Visit-level JSONL with the same shape the single-segment reader expects.
+
+    The single-segment `workspace_map_visits.jsonl` carries
+    `target_index`, `target_label`, `target_x_mm`, `target_y_mm`,
+    `target_amplitude_mm`, `position_mm`, `capture_accepted`, etc. We
+    emit the same keys so existing Data tab + analysis hooks work, plus
+    two-segment extras (`bottom_x_cm`, `top_x_cm`, ...).
+    """
+    with Path(path).open("w", encoding="utf-8") as handle:
+        for visit in visit_dicts:
+            distal = visit.get("distal_xyz_robot_mm") or [None, None, None]
+            handle.write(
+                json.dumps(
+                    {
+                        # Single-segment-shape keys (operator tools recognize these).
+                        "target_index": visit.get("target_index"),
+                        "target_label": visit.get("target_id"),
+                        "target_x_mm": float(visit.get("bottom_x_cm") or 0.0) * 10.0,
+                        "target_y_mm": float(visit.get("bottom_y_cm") or 0.0) * 10.0,
+                        "target_amplitude_mm": float(visit.get("amplitude_cm") or 0.0) * 10.0,
+                        "position_mm": [float(v) for v in distal] if distal[0] is not None else None,
+                        "capture_accepted": bool(visit.get("accepted") or visit.get("capture_accepted")),
+                        "capture_reject_reason": visit.get("reject_reason"),
+                        "cycle_index": visit.get("cycle_index"),
+                        "rejected": not bool(visit.get("accepted") or visit.get("capture_accepted")),
+                        "protocol": "two_segment_workspace_repeatability_lhs_from_neutral",
+                        "tracker_stale_age_s": visit.get("tracker_age_s"),
+                        "resolved_servo_goal_ticks": visit.get("all_8_goal_ticks"),
+                        # Two-segment extras.
+                        "bottom_x_cm": visit.get("bottom_x_cm"),
+                        "bottom_y_cm": visit.get("bottom_y_cm"),
+                        "top_x_cm": visit.get("top_x_cm"),
+                        "top_y_cm": visit.get("top_y_cm"),
+                        "group_tag": visit.get("group_tag"),
+                        "visit_in_cycle": visit.get("visit_in_cycle"),
+                        "visit_position": visit.get("visit_position"),
+                        "intermediate_xyz_robot_mm": visit.get("intermediate_xyz_robot_mm"),
+                        "ordered_8_displacements_cm": visit.get("ordered_8_displacements_cm"),
+                    },
+                    default=_json_default,
+                )
+                + "\n"
+            )
+    return path
+
+
+def _write_workspace_map_per_target_csv(path: Path, per_target_rows: Sequence[Mapping[str, Any]]) -> Path:
+    """Per-target CSV with single-segment-compatible column names plus extras.
+
+    Matches the single-segment `workspace_map_per_target.csv` shape
+    (target_index/target_label/target_x_mm/target_y_mm/target_amplitude_mm/
+    rms_spread_mm/...). Bottom/top XY are added as extra columns at the end.
+    """
+    fields = [
+        "target_index",
+        "target_label",
+        "target_x_mm",
+        "target_y_mm",
+        "target_amplitude_mm",
+        "accepted_repeats",
+        "rms_spread_mm",
+        "mean_radial_mm",
+        "median_radial_mm",
+        "max_radial_mm",
+        "std_x_mm",
+        "std_y_mm",
+        "std_z_mm",
+        "centroid_x_mm",
+        "centroid_y_mm",
+        "centroid_z_mm",
+        "group_tag",
+        # Two-segment extras.
+        "bottom_x_cm",
+        "bottom_y_cm",
+        "top_x_cm",
+        "top_y_cm",
+    ]
+    with Path(path).open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in per_target_rows:
+            centroid = row.get("centroid_xyz_mm") or [None, None, None]
+            writer.writerow(
+                {
+                    "target_index": row.get("target_index"),
+                    "target_label": row.get("target_id"),
+                    "target_x_mm": float(row.get("bottom_x_cm") or 0.0) * 10.0,
+                    "target_y_mm": float(row.get("bottom_y_cm") or 0.0) * 10.0,
+                    "target_amplitude_mm": row.get("target_amplitude_mm"),
+                    "accepted_repeats": row.get("accepted_repeats"),
+                    "rms_spread_mm": row.get("rms_spread_mm"),
+                    "mean_radial_mm": row.get("mean_radial_mm"),
+                    "median_radial_mm": row.get("median_radial_mm"),
+                    "max_radial_mm": row.get("max_radial_mm"),
+                    "std_x_mm": row.get("std_x_mm"),
+                    "std_y_mm": row.get("std_y_mm"),
+                    "std_z_mm": row.get("std_z_mm"),
+                    "centroid_x_mm": centroid[0] if centroid else None,
+                    "centroid_y_mm": centroid[1] if centroid else None,
+                    "centroid_z_mm": centroid[2] if centroid else None,
+                    "group_tag": row.get("group_tag"),
+                    "bottom_x_cm": row.get("bottom_x_cm"),
+                    "bottom_y_cm": row.get("bottom_y_cm"),
+                    "top_x_cm": row.get("top_x_cm"),
+                    "top_y_cm": row.get("top_y_cm"),
+                }
+            )
+    return path
 
 
 def _write_visit_plan_csv(path: Path, visit_dicts: Sequence[Mapping[str, Any]]) -> Path:

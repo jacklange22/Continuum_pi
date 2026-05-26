@@ -512,7 +512,12 @@ def _check_two_segment_workspace_repeatability(
         )
     for filename, label in [
         ("two_segment_workspace_repeatability_summary.txt", "summary text"),
-        ("repeatability_metrics.json", "metrics JSON"),
+        # Canonical single-segment-shape outputs (the Data tab + analysis
+        # tools look for these literal names).
+        ("workspace_map_summary.json", "workspace map summary JSON"),
+        ("workspace_map_visits.jsonl", "workspace map visits JSONL"),
+        ("workspace_map_per_target.csv", "workspace map per-target CSV"),
+        # Two-segment-specific extras.
         ("per_target_repeatability.csv", "per-target CSV"),
         ("target_captures.csv", "captures CSV"),
         ("repeatability_targets.json", "targets JSON"),
@@ -522,10 +527,10 @@ def _check_two_segment_workspace_repeatability(
             issues.append(RunValidationIssue("WARN", f"{filename} is missing ({label})."))
     # Figure presence is informational (matplotlib may be unavailable).
     for filename in (
-        "two_segment_thesis_01_workspace_rms_3d.png",
-        "two_segment_thesis_02_workspace_rms_map.png",
-        "two_segment_thesis_03_rms_vs_amplitude.png",
-        "two_segment_thesis_04_2d_repeatability_map.png",
+        "thesis_01_workspace_rms_3d.png",
+        "thesis_02_workspace_rms_map.png",
+        "thesis_03_rms_vs_amplitude.png",
+        "thesis_04_2d_repeatability_map.png",
     ):
         if not (run_dir / filename).exists():
             issues.append(RunValidationIssue("INFO", f"{filename} is missing (thesis figure)."))

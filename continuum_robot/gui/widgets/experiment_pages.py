@@ -5888,6 +5888,264 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             self.preview_label.setText(f"Preview unavailable: {exc}")
 
 
+class TwoSegmentWorkspaceRepeatabilityPage(ExperimentPageBase):
+    """Parameter form for the two-segment workspace repeatability experiment.
+
+    Mirrors the single-segment ``workspace_repeatability_map`` page in shape:
+    Target Geometry, Visit Schedule, Run Settings cards. The 4D command space
+    (bottom_x, bottom_y, top_x, top_y) is exposed as a single per-segment
+    amplitude (matches operator language); the target generator dropdown
+    swaps between LHS / rings-and-axes / grid-subsample.
+    """
+
+    refresh_policy = "manual"
+    page_hint = (
+        "Visit a 4D-LHS grid of two-segment targets (bottom_x, bottom_y, top_x, top_y), "
+        "returning to neutral between every visit, to map per-target distal repeatability "
+        "across the two-segment workspace. Output mirrors the single-segment "
+        "workspace_repeatability_map shape (workspace_map_summary.json, "
+        "thesis_0*_workspace_*.png, ...) plus two-segment-specific extras. "
+        "Defaults: 200 targets x 20 visits = 4000 captures at +/-0.25 cm, ~3 hr."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Two-Segment Workspace Map")
+
+    def _build_parameter_sections(self) -> None:
+        geometry_card = ExperimentCard(
+            "Target Geometry",
+            "Choose how many targets and the per-segment tendon amplitude. "
+            "Targets are commanded in 4D (bottom_x, bottom_y, top_x, top_y); "
+            "amplitude bounds each dimension.",
+        )
+        geometry_form = QFormLayout()
+        self.target_count_spin = QSpinBox()
+        self.target_count_spin.setRange(3, 1000)
+        self.target_count_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("target_count", int(value))
+        )
+        self.amplitude_preset_combo = NoWheelComboBox()
+        for label, value in (
+            ("+/-0.10 cm (smoke)", 0.10),
+            ("+/-0.25 cm (first thesis run)", 0.25),
+            ("+/-0.50 cm", 0.50),
+            ("+/-0.75 cm", 0.75),
+            ("+/-1.00 cm (full planned range)", 1.00),
+        ):
+            self.amplitude_preset_combo.addItem(label, float(value))
+        self.amplitude_preset_combo.currentIndexChanged.connect(self._on_amplitude_preset_changed)
+        self.max_amplitude_spin = QDoubleSpinBox()
+        self.max_amplitude_spin.setRange(0.05, 5.0)
+        self.max_amplitude_spin.setDecimals(2)
+        self.max_amplitude_spin.setSingleStep(0.05)
+        self.max_amplitude_spin.setSuffix(" cm")
+        self.max_amplitude_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_segment_displacement_cm", float(value))
+        )
+        self.target_generator_combo = NoWheelComboBox()
+        for label, value in (
+            ("Workspace Latin Hypercube (default)", "workspace_latin_hypercube"),
+            ("Rings + Axes (bottom / top / combined)", "rings_and_axes"),
+            ("4D Grid + farthest-point", "grid_subsample"),
+        ):
+            self.target_generator_combo.addItem(label, value)
+        self.target_generator_combo.currentIndexChanged.connect(
+            lambda _i: self.controller.set_config_value(
+                "target_generator_mode", str(self.target_generator_combo.currentData())
+            )
+        )
+        self.max_tick_spin = QSpinBox()
+        self.max_tick_spin.setRange(0, 4096)
+        self.max_tick_spin.setSingleStep(50)
+        self.max_tick_spin.setToolTip(
+            "0 = auto-derive from amplitude (recommended). Non-zero forces a manual cap."
+        )
+        self.max_tick_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value))
+        )
+        geometry_form.addRow("Target Count", self.target_count_spin)
+        geometry_form.addRow("Amplitude Preset", self.amplitude_preset_combo)
+        geometry_form.addRow("Max Segment Displacement", self.max_amplitude_spin)
+        geometry_form.addRow("Target Generator", self.target_generator_combo)
+        geometry_form.addRow("Max Tick Delta (0 = auto)", self.max_tick_spin)
+        geometry_card.body_layout.addLayout(geometry_form)
+        self.parameter_layout.addWidget(geometry_card)
+
+        schedule_card = ExperimentCard(
+            "Visit Schedule",
+            "Each cycle visits every target once in a freshly-shuffled order so timing "
+            "drift averages across the workspace. Total captures = target count x repeats.",
+        )
+        schedule_form = QFormLayout()
+        self.repeats_spin = QSpinBox()
+        self.repeats_spin.setRange(2, 200)
+        self.repeats_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("repeats_per_target", int(value))
+        )
+        self.neutral_settle_spin = QDoubleSpinBox()
+        self.neutral_settle_spin.setRange(0.0, 30.0)
+        self.neutral_settle_spin.setDecimals(2)
+        self.neutral_settle_spin.setSingleStep(0.1)
+        self.neutral_settle_spin.setSuffix(" s")
+        self.neutral_settle_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("neutral_settle_s", float(value))
+        )
+        self.target_settle_spin = QDoubleSpinBox()
+        self.target_settle_spin.setRange(0.0, 30.0)
+        self.target_settle_spin.setDecimals(2)
+        self.target_settle_spin.setSingleStep(0.1)
+        self.target_settle_spin.setSuffix(" s")
+        self.target_settle_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("target_settle_s", float(value))
+        )
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 2_000_000_000)
+        self.seed_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("random_seed", int(value))
+        )
+        self.return_neutral_check = QCheckBox("Return to neutral between visits")
+        self.return_neutral_check.toggled.connect(
+            lambda value: self.controller.set_config_value("return_to_neutral_between_visits", bool(value))
+        )
+        schedule_form.addRow("Repeats per Target", self.repeats_spin)
+        schedule_form.addRow("Neutral Settle", self.neutral_settle_spin)
+        schedule_form.addRow("Target Settle", self.target_settle_spin)
+        schedule_form.addRow("Random Seed", self.seed_spin)
+        schedule_form.addRow("", self.return_neutral_check)
+        schedule_card.body_layout.addLayout(schedule_form)
+        self.estimate_label = QLabel("Estimated visits: -")
+        self.estimate_label.setProperty("role", "muted")
+        schedule_card.body_layout.addWidget(self.estimate_label)
+        self.parameter_layout.addWidget(schedule_card)
+
+        run_card = ExperimentCard(
+            "Run Settings",
+            "Live thesis run requires accepted all-8 startup + confirmed bottom/top "
+            "assembly. Dry-run synthesizes positions so you can preview the bundle "
+            "shape before committing to a multi-hour real run.",
+        )
+        run_form = QFormLayout()
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.setPlaceholderText("optional short label persisted into summary.json")
+        self.run_label_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        self.distal_tool_edit = QLineEdit()
+        self.distal_tool_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value(
+                "expected_distal_tool_id", self.distal_tool_edit.text().strip().upper() or "0A"
+            )
+        )
+        self.thesis_goal_spin = QDoubleSpinBox()
+        self.thesis_goal_spin.setRange(0.0, 100.0)
+        self.thesis_goal_spin.setDecimals(2)
+        self.thesis_goal_spin.setSingleStep(0.1)
+        self.thesis_goal_spin.setSuffix(" mm")
+        self.thesis_goal_spin.setSpecialValueText("(not set)")
+        self.thesis_goal_spin.valueChanged.connect(self._on_thesis_goal_changed)
+        self.assembly_confirm_check = QCheckBox("Confirm bottom/top physical assembly for this session")
+        self.assembly_confirm_check.toggled.connect(
+            lambda value: self.controller.set_config_value("physical_assembly_confirmed_by_operator", bool(value))
+        )
+        self.servo_only_check = QCheckBox("Allow servo-only test run (no all-8 startup required)")
+        self.servo_only_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_servo_only_test_run", bool(value))
+        )
+        self.dry_run_check = QCheckBox("Dry-run (synthesize positions instead of capturing)")
+        self.dry_run_check.toggled.connect(
+            lambda value: self.controller.set_config_value("dry_run", bool(value))
+        )
+        run_form.addRow("Run Label", self.run_label_edit)
+        run_form.addRow("Distal Tool ID", self.distal_tool_edit)
+        run_form.addRow("Operator Target RMS", self.thesis_goal_spin)
+        run_form.addRow("", self.assembly_confirm_check)
+        run_form.addRow("", self.servo_only_check)
+        run_form.addRow("", self.dry_run_check)
+        run_card.body_layout.addLayout(run_form)
+        self.parameter_layout.addWidget(run_card)
+
+    def _on_amplitude_preset_changed(self, *_args) -> None:
+        value = self.amplitude_preset_combo.currentData()
+        if value is None:
+            return
+        self.max_amplitude_spin.setValue(float(value))
+
+    def _on_thesis_goal_changed(self, value: float) -> None:
+        if float(value) <= 0.0:
+            self.controller.set_config_value("target_distal_rms_threshold_mm", None)
+        else:
+            self.controller.set_config_value("target_distal_rms_threshold_mm", float(value))
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        from continuum_robot.experiments.two_segment_workspace_repeatability import (
+            TwoSegmentWorkspaceRepeatabilityConfig,
+        )
+
+        config = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(self.controller.config_payload())
+        self._set_spin(self.target_count_spin, int(config.target_count))
+        self._set_double(self.max_amplitude_spin, float(config.max_segment_displacement_cm))
+        self._sync_amplitude_preset(float(config.max_segment_displacement_cm))
+        self._set_combo_value(self.target_generator_combo, config.target_generator_mode)
+        self._set_spin(self.max_tick_spin, int(config.max_tick_delta_from_startup))
+        self._set_spin(self.repeats_spin, int(config.repeats_per_target))
+        self._set_double(self.neutral_settle_spin, float(config.neutral_settle_s))
+        self._set_double(self.target_settle_spin, float(config.target_settle_s))
+        self._set_spin(self.seed_spin, int(config.random_seed))
+        self._set_checkbox(self.return_neutral_check, bool(config.return_to_neutral_between_visits))
+        self._set_line_text(self.run_label_edit, str(config.run_label or ""))
+        self._set_line_text(self.distal_tool_edit, str(config.expected_distal_tool_id or "0A"))
+        if config.target_distal_rms_threshold_mm is None:
+            self._set_double(self.thesis_goal_spin, 0.0)
+        else:
+            self._set_double(self.thesis_goal_spin, float(config.target_distal_rms_threshold_mm))
+        self._set_checkbox(self.assembly_confirm_check, bool(config.physical_assembly_confirmed_by_operator))
+        self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
+        self._set_checkbox(self.dry_run_check, bool(config.dry_run))
+        planned_visits = int(config.target_count) * int(config.repeats_per_target)
+        est_per_visit_s = float(config.neutral_settle_s) + float(config.target_settle_s) + 0.5
+        est_hours = planned_visits * est_per_visit_s / 3600.0
+        self.estimate_label.setText(
+            f"Estimated visits: {planned_visits}  (~{est_hours:.1f} hr at {est_per_visit_s:.2f} s/visit)"
+        )
+
+    def _sync_amplitude_preset(self, value_cm: float) -> None:
+        best = -1
+        for index in range(self.amplitude_preset_combo.count()):
+            if abs(float(self.amplitude_preset_combo.itemData(index) or 0.0) - float(value_cm)) < 1e-6:
+                best = index
+                break
+        if best >= 0:
+            with QSignalBlocker(self.amplitude_preset_combo):
+                self.amplitude_preset_combo.setCurrentIndex(best)
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        _ = state
+        from continuum_robot.experiments.two_segment_workspace_repeatability import (
+            TwoSegmentWorkspaceRepeatabilityConfig,
+        )
+
+        config = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(self.controller.config_payload())
+        return (
+            config.target_count,
+            config.repeats_per_target,
+            config.max_segment_displacement_cm,
+            config.target_generator_mode,
+            config.max_tick_delta_from_startup,
+            config.neutral_settle_s,
+            config.target_settle_s,
+            config.random_seed,
+            config.return_to_neutral_between_visits,
+            config.run_label,
+            config.expected_distal_tool_id,
+            config.target_distal_rms_threshold_mm,
+            config.physical_assembly_confirmed_by_operator,
+            config.allow_servo_only_test_run,
+            config.dry_run,
+        )
+
+
 class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
     """Dedicated page for the two-segment 0B → 0A penprobe lookup demo.
 
@@ -6100,6 +6358,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "two_segment_startup_validation": lambda ctrl: TwoSegmentStartupValidationPage(ctrl, "two_segment_startup_validation"),
         "two_segment_collect_pose_command_dataset": lambda ctrl: TwoSegmentCollectPoseDatasetPage(ctrl, "two_segment_collect_pose_command_dataset"),
         "two_segment_repeatability": lambda ctrl: TwoSegmentRepeatabilityPage(ctrl, "two_segment_repeatability"),
+        "two_segment_workspace_repeatability": lambda ctrl: TwoSegmentWorkspaceRepeatabilityPage(ctrl, "two_segment_workspace_repeatability"),
         "two_segment_slow_motion_demo": lambda ctrl: TwoSegmentSlowMotionDemoPage(ctrl, "two_segment_slow_motion_demo"),
         "two_segment_penprobe_lookup_demo": lambda ctrl: TwoSegmentPenprobeLookupDemoPage(ctrl, "two_segment_penprobe_lookup_demo"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),

@@ -2617,6 +2617,38 @@ def test_experiment_workspace_loads_two_segment_repeatability_page(tmp_path: Pat
     assert page.run_button.text() == "Run Two-Segment Repeatability"
 
 
+def test_two_segment_workspace_repeatability_page_constructs_offscreen_with_defaults(tmp_path: Path) -> None:
+    """Phase: dedicated workspace-repeatability page exposes 200/20/0.25 cm defaults."""
+    _app()
+    controller = _TwoSegmentDatasetPageController(tmp_path)
+    page = experiment_pages_module.TwoSegmentWorkspaceRepeatabilityPage(
+        controller,
+        "two_segment_workspace_repeatability",
+    )
+    page._sync_parameters_from_state(SimpleNamespace())
+    assert page.run_button.text() == "Run Two-Segment Workspace Map"
+    assert page.target_count_spin.value() == 200
+    assert page.repeats_spin.value() == 20
+    assert abs(page.max_amplitude_spin.value() - 0.25) < 1e-6
+    assert page.target_generator_combo.currentData() == "workspace_latin_hypercube"
+    assert page.return_neutral_check.isChecked()
+    # Estimate text updates with planned visits.
+    assert "Estimated visits: 4000" in page.estimate_label.text()
+    # Changing target count writes through.
+    page.target_count_spin.setValue(50)
+    page.repeats_spin.setValue(5)
+    payload = controller.config_payload()
+    assert payload["target_count"] == 50
+    assert payload["repeats_per_target"] == 5
+
+
+def test_two_segment_workspace_repeatability_visible_only_in_dual_segment() -> None:
+    from continuum_robot.gui.controllers.experiment_controller import MODE_EXPERIMENT_VISIBILITY
+
+    assert "two_segment_workspace_repeatability" in MODE_EXPERIMENT_VISIBILITY["dual_segment"]
+    assert "two_segment_workspace_repeatability" not in MODE_EXPERIMENT_VISIBILITY["single_segment"]
+
+
 def test_two_segment_penprobe_lookup_demo_page_constructs_offscreen_with_default_roles(tmp_path: Path) -> None:
     """Phase 3: dedicated GUI page constructs cleanly with target=0B / tip=0A defaults."""
     _app()

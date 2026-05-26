@@ -222,19 +222,31 @@ def test_dry_run_executes_shortened_protocol_and_writes_outputs(tmp_path: Path) 
     assert metrics["valid_for_repeatability_analysis"] is True
     assert metrics["primary_metric"] == "distal_xyz_repeatability"
     assert metrics["expected_distal_tool_id"] == "0A"
-    # Files written.
+    # Files written. The new experiment writes BOTH the canonical
+    # single-segment workspace_map_* filenames AND the two-segment-specific
+    # extras so the existing data-plumbing recognises the run shape.
     out = result.paths.output_dir
     for required in (
         "two_segment_workspace_repeatability_summary.txt",
+        # Canonical single-segment-shape artifacts.
+        "workspace_map_summary.json",
+        "workspace_map_visits.jsonl",
+        "workspace_map_per_target.csv",
+        # Two-segment-specific extras.
         "repeatability_targets.json",
         "repeatability_visit_plan.csv",
         "target_captures.csv",
         "per_target_repeatability.csv",
-        "repeatability_metrics.json",
         "repeatability_metrics.csv",
         "failure_events.jsonl",
     ):
         assert (out / required).exists(), f"missing {required}"
+    # Canonical summary JSON uses the same shape as single-segment.
+    workspace_summary = json.loads((out / "workspace_map_summary.json").read_text(encoding="utf-8"))
+    assert "summary" in workspace_summary
+    assert "per_target_rows" in workspace_summary
+    for key in ("workspace_rms_mean_mm", "workspace_rms_max_mm", "workspace_rms_p95_mm", "target_count", "targets_with_data"):
+        assert key in workspace_summary["summary"], f"summary missing {key}"
     summary_text = (out / "two_segment_workspace_repeatability_summary.txt").read_text(encoding="utf-8")
     assert "Two-Segment Workspace Repeatability" in summary_text
     assert "target_count" in summary_text
@@ -381,7 +393,8 @@ def test_targets_below_minimum_repeats_flagged() -> None:
     per_target = compute_workspace_repeatability_metrics(visit_results=visits, targets=[target_a, target_b])
     summary = summarize_workspace_repeatability(per_target, minimum_repeats_per_target=15)
     assert summary["targets_below_minimum_repeats"] == 1
-    assert summary["targets_with_repeats"] == 2
+    # Canonical single-segment-shape key for "targets with at least one accepted visit".
+    assert summary["targets_with_data"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +457,8 @@ def test_outputs_writer_produces_figures_and_csv(tmp_path: Path) -> None:
     )
     assert (out_dir / "repeatability_targets.json").exists()
     assert (out_dir / "per_target_repeatability.csv").exists()
-    assert (out_dir / "repeatability_metrics.json").exists()
+    assert (out_dir / "workspace_map_summary.json").exists()
+    assert (out_dir / "workspace_map_per_target.csv").exists()
     # Figures may or may not exist depending on matplotlib availability, but
     # if they do the names are the canonical thesis-figure filenames.
     for figure_key in ("thesis_01", "thesis_02", "thesis_03", "thesis_04"):
@@ -491,17 +505,21 @@ def test_outputs_writer_handles_single_target_without_crash(tmp_path: Path) -> N
 def test_core_filenames_includes_new_workspace_repeatability_artifacts() -> None:
     expected = {
         "two_segment_workspace_repeatability_summary.txt",
+        # Canonical single-segment-compatible filenames.
+        "workspace_map_summary.json",
+        "workspace_map_visits.jsonl",
+        "workspace_map_per_target.csv",
+        "thesis_01_workspace_rms_3d.png",
+        "thesis_02_workspace_rms_map.png",
+        "thesis_03_rms_vs_amplitude.png",
+        "thesis_04_2d_repeatability_map.png",
+        # Two-segment-specific extras.
         "repeatability_targets.json",
         "repeatability_visit_plan.csv",
-        "repeatability_metrics.json",
         "repeatability_metrics.csv",
         "per_target_repeatability.csv",
         "target_captures.csv",
         "failure_events.jsonl",
-        "two_segment_thesis_01_workspace_rms_3d.png",
-        "two_segment_thesis_02_workspace_rms_map.png",
-        "two_segment_thesis_03_rms_vs_amplitude.png",
-        "two_segment_thesis_04_2d_repeatability_map.png",
     }
     assert expected.issubset(CORE_FILENAMES)
 
@@ -541,7 +559,9 @@ def _write_good_workspace_repeatability_run(tmp_path: Path) -> Path:
     (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
     for filename in (
         "two_segment_workspace_repeatability_summary.txt",
-        "repeatability_metrics.json",
+        "workspace_map_summary.json",
+        "workspace_map_visits.jsonl",
+        "workspace_map_per_target.csv",
         "per_target_repeatability.csv",
         "target_captures.csv",
         "repeatability_targets.json",
