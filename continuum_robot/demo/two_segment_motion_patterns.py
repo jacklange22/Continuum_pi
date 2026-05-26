@@ -47,6 +47,12 @@ PATTERN_RASTER = "raster"
 PATTERN_CLOVER = "clover"
 PATTERN_NEUTRAL_PULSE = "neutral_pulse"
 PATTERN_LISSAJOUS = "custom_lissajous"
+# Organic / weird patterns. These are aperiodic (or quasi-periodic) and
+# intentionally don't trace a single closed curve — they're designed to
+# look "alive" instead of mechanical. Per-axis amplitude is still strictly
+# bounded by ``amplitude`` so the soft tick cap still holds.
+PATTERN_CREEPY_SQUID = "creepy_squid"
+PATTERN_SLOW_DRIFT = "slow_drift"
 
 SUPPORTED_PATTERNS = (
     PATTERN_FIGURE8,
@@ -58,6 +64,8 @@ SUPPORTED_PATTERNS = (
     PATTERN_CLOVER,
     PATTERN_NEUTRAL_PULSE,
     PATTERN_LISSAJOUS,
+    PATTERN_CREEPY_SQUID,
+    PATTERN_SLOW_DRIFT,
 )
 
 COUPLING_SAME = "same_direction"
@@ -187,10 +195,104 @@ def _pair_command_for_pattern(
             amplitude * math.sin(a * theta + lissajous_phase),
             amplitude * math.sin(b * theta),
         )
+    if name == PATTERN_CREEPY_SQUID:
+        return _creepy_squid_pair(theta=theta, amplitude=amplitude)
+    if name == PATTERN_SLOW_DRIFT:
+        return _slow_drift_pair(theta=theta, amplitude=amplitude, seed=seed)
     # Unknown pattern: fall back to a safe figure-8 so we never silently
     # over-command. The controller validates the pattern name upstream so
     # this path is unreachable in practice.
     return amplitude * math.sin(theta), amplitude * math.sin(2.0 * theta) / 2.0
+
+
+# ----------------------------------------------------------------------------
+# Organic / weird pattern generators
+# ----------------------------------------------------------------------------
+
+
+# Incommensurate-frequency Fourier components for the creepy squid pattern.
+# Coefficients sum to 1.0 in each axis so the per-axis output is bounded
+# strictly to [-amplitude, amplitude]. Frequencies are intentionally
+# irrational ratios (golden ratio, e, √2, √5, √11) so the trajectory does
+# not close on itself over any reasonable run length — that aperiodicity
+# is the "weird, alive" feeling. Phases are off-grid to prevent accidental
+# axis alignment that would make the motion look mechanical.
+_SQUID_X_COMPONENTS: tuple[tuple[float, float, float], ...] = (
+    (1.000, 0.45, 0.00),   # base — slow fundamental
+    (1.618, 0.30, 1.10),   # golden ratio
+    (2.718, 0.15, 2.30),   # e
+    (4.123, 0.10, 0.70),   # √17
+)
+_SQUID_Y_COMPONENTS: tuple[tuple[float, float, float], ...] = (
+    (0.927, 0.40, 1.57),   # nearly the same fundamental as x → slow beat
+    (1.414, 0.30, 0.50),   # √2
+    (2.236, 0.20, 1.70),   # √5
+    (3.318, 0.10, 2.90),   # √11
+)
+
+
+def _creepy_squid_pair(*, theta: float, amplitude: float) -> tuple[float, float]:
+    """Squid-tentacle-ish quasi-periodic motion bounded per-axis by amplitude.
+
+    The motion is a sum of incommensurate-ratio sinusoids in x and y plus a
+    slow breathing envelope, then scaled by ``amplitude``. By construction
+    each component sum is bounded by 1.0 and the envelope is bounded by
+    1.0, so ``|px|, |py| <= amplitude`` at every point. The aperiodicity
+    is what makes it look alive instead of mechanical — over the demo's
+    typical 1–2 cycle run length the path never quite closes back on
+    itself.
+    """
+    x_sum = sum(
+        weight * math.sin(freq * theta + phase)
+        for (freq, weight, phase) in _SQUID_X_COMPONENTS
+    )
+    y_sum = sum(
+        weight * math.sin(freq * theta + phase)
+        for (freq, weight, phase) in _SQUID_Y_COMPONENTS
+    )
+    # Slow breathing envelope (~3× slower than the fundamental) gives the
+    # squid a "pulsing" feel: it expands, contracts, and almost-returns
+    # to neutral, then expands again at a slightly different angle.
+    envelope = 0.55 + 0.45 * math.sin(theta * 0.30 + 0.20)
+    return (amplitude * envelope * x_sum, amplitude * envelope * y_sum)
+
+
+def _slow_drift_pair(*, theta: float, amplitude: float, seed: int) -> tuple[float, float]:
+    """Pseudo-random low-frequency drift — looks like a tentacle wandering.
+
+    The output is a finite Fourier series with seeded random phases and a
+    1/f weight spectrum. Visually this looks like organic drift: slow
+    bias-changing motion that never quite repeats but also never moves
+    quickly. With the demo's typical 25 s cycle and 1 cycle, the operator
+    sees a single 25 s journey across the bounded workspace.
+
+    Bounded per-axis by ``amplitude`` because the weights are normalized
+    so ``sum(|w|) = 1``. The ``seed`` parameter controls which random
+    phases are drawn so the same seed always produces the same drift —
+    important for tests and reproducible demos.
+    """
+    # Use a fixed RNG salt so a seed=0 still produces meaningful variation
+    # without colliding with seed=0 elsewhere in the codebase.
+    rng = random.Random(int(seed) * 7919 + 99991)
+    x = 0.0
+    y = 0.0
+    weight_total = 0.0
+    # 6 harmonics: enough to look organic, few enough to render cleanly.
+    for n in range(1, 7):
+        weight = 1.0 / n  # 1/f → low frequencies dominate, motion stays slow
+        # Frequencies are deliberately fractional and offset by RNG jitter
+        # so two consecutive harmonics never end up at integer ratios.
+        freq_x = (n * 0.6) + (rng.random() - 0.5) * 0.30
+        freq_y = (n * 0.55) + (rng.random() - 0.5) * 0.30
+        phase_x = rng.random() * math.tau
+        phase_y = rng.random() * math.tau
+        x += weight * math.sin(freq_x * theta + phase_x)
+        y += weight * math.sin(freq_y * theta + phase_y)
+        weight_total += weight
+    # Normalize so |x|, |y| <= 1 → output magnitudes <= amplitude.
+    x /= weight_total
+    y /= weight_total
+    return (amplitude * x, amplitude * y)
 
 
 def _apply_coupling(

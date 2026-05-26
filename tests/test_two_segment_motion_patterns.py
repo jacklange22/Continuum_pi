@@ -24,10 +24,12 @@ from continuum_robot.demo.two_segment_motion_patterns import (
     DEFAULT_CYCLE_DURATION_S,
     PATTERN_CIRCLE,
     PATTERN_CLOVER,
+    PATTERN_CREEPY_SQUID,
     PATTERN_FIGURE8,
     PATTERN_LISSAJOUS,
     PATTERN_OVAL,
     PATTERN_RASTER,
+    PATTERN_SLOW_DRIFT,
     PATTERN_SWEEP_X,
     PATTERN_SWEEP_Y,
     PHASE_HOLD_END,
@@ -280,3 +282,207 @@ class TestAmplitudePresetsExposed:
 
     def test_presets_sorted_increasing(self) -> None:
         assert list(AMPLITUDE_PRESETS_CM) == sorted(AMPLITUDE_PRESETS_CM)
+
+
+class TestCreepySquidAndSlowDriftPatterns:
+    """Coverage for the organic ``creepy_squid`` and ``slow_drift`` patterns.
+
+    Both patterns are designed to look aperiodic / alive while remaining
+    strictly amplitude-bounded. Tests here pin:
+      - per-axis amplitude is bounded to ``amplitude_cm`` (the soft tick
+        cap downstream depends on this);
+      - both patterns are registered in ``SUPPORTED_PATTERNS`` so the GUI
+        dropdown picks them up automatically;
+      - trajectories ramp from and back to neutral (safety contract);
+      - the two patterns produce visibly distinct shapes (no copy-paste);
+      - ``slow_drift`` is reproducible for the same seed but does change
+        when the seed changes (so re-running can refresh the wandering).
+    """
+
+    def test_both_patterns_are_registered(self) -> None:
+        assert PATTERN_CREEPY_SQUID in SUPPORTED_PATTERNS
+        assert PATTERN_SLOW_DRIFT in SUPPORTED_PATTERNS
+
+    def test_creepy_squid_respects_0_5_cm_per_axis_bound(self) -> None:
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CREEPY_SQUID,
+                amplitude_cm=0.50,
+                cycle_duration_s=25.0,
+                cycles=1,
+                update_rate_hz=10.0,
+            )
+        )
+        for point in traj:
+            assert abs(point.bottom_x_cm) <= 0.50 + 1e-9, "creepy_squid x exceeded 0.5 cm bound"
+            assert abs(point.bottom_y_cm) <= 0.50 + 1e-9, "creepy_squid y exceeded 0.5 cm bound"
+            assert abs(point.top_x_cm) <= 0.50 + 1e-9
+            assert abs(point.top_y_cm) <= 0.50 + 1e-9
+
+    def test_slow_drift_respects_0_5_cm_per_axis_bound(self) -> None:
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_SLOW_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=25.0,
+                cycles=1,
+                update_rate_hz=10.0,
+            )
+        )
+        for point in traj:
+            assert abs(point.bottom_x_cm) <= 0.50 + 1e-9, "slow_drift x exceeded 0.5 cm bound"
+            assert abs(point.bottom_y_cm) <= 0.50 + 1e-9, "slow_drift y exceeded 0.5 cm bound"
+            assert abs(point.top_x_cm) <= 0.50 + 1e-9
+            assert abs(point.top_y_cm) <= 0.50 + 1e-9
+
+    def test_both_patterns_start_and_end_at_neutral(self) -> None:
+        for pattern in (PATTERN_CREEPY_SQUID, PATTERN_SLOW_DRIFT):
+            traj = generate_pattern_trajectory(
+                _request(
+                    pattern=pattern,
+                    amplitude_cm=0.50,
+                    cycle_duration_s=25.0,
+                    cycles=1,
+                    update_rate_hz=10.0,
+                )
+            )
+            assert trajectory_starts_and_ends_at_neutral(traj), (
+                f"{pattern} did not start/end at neutral — ramp envelope broken"
+            )
+
+    def test_creepy_squid_produces_aperiodic_motion(self) -> None:
+        # Aperiodicity proxy: across one cycle, the visited (px, py) points
+        # should be spread out enough that the convex hull (here approximated
+        # by max distance from origin) is non-trivial AND no single dominant
+        # frequency dictates the shape. The mechanical patterns close back
+        # on themselves; the squid does not.
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CREEPY_SQUID,
+                amplitude_cm=0.50,
+                cycle_duration_s=30.0,
+                cycles=1,
+                update_rate_hz=20.0,
+                ramp_in_s=0.0,
+                ramp_out_s=0.0,
+                hold_at_start_s=0.0,
+                hold_at_end_s=0.0,
+            )
+        )
+        midpoints = [(p.bottom_x_cm, p.bottom_y_cm) for p in traj]
+        # The midpoint of the trajectory should NOT match the start exactly
+        # (a perfectly periodic 1-cycle pattern would have midpoint = π phase
+        # offset of the start, but typically wouldn't be close to start).
+        first = midpoints[1]  # skip the leading neutral sample
+        mid = midpoints[len(midpoints) // 2]
+        # Distance between first-pattern-sample and mid-pattern-sample
+        # should be a meaningful fraction of amplitude — if it were close to
+        # zero the pattern would be barely moving / repeating itself.
+        dx = mid[0] - first[0]
+        dy = mid[1] - first[1]
+        assert math.hypot(dx, dy) > 0.05, (
+            "creepy_squid mid-cycle ≈ start: pattern is too periodic / not weird enough"
+        )
+
+    def test_slow_drift_is_reproducible_for_same_seed(self) -> None:
+        req_kwargs = dict(
+            pattern=PATTERN_SLOW_DRIFT,
+            amplitude_cm=0.50,
+            cycle_duration_s=25.0,
+            cycles=1,
+            update_rate_hz=10.0,
+            ramp_in_s=0.0,
+            ramp_out_s=0.0,
+            hold_at_start_s=0.0,
+            hold_at_end_s=0.0,
+            seed=42,
+        )
+        traj_a = generate_pattern_trajectory(_request(**req_kwargs))
+        traj_b = generate_pattern_trajectory(_request(**req_kwargs))
+        assert len(traj_a) == len(traj_b)
+        for a, b in zip(traj_a, traj_b):
+            assert a.bottom_x_cm == pytest.approx(b.bottom_x_cm)
+            assert a.bottom_y_cm == pytest.approx(b.bottom_y_cm)
+
+    def test_slow_drift_changes_when_seed_changes(self) -> None:
+        common = dict(
+            pattern=PATTERN_SLOW_DRIFT,
+            amplitude_cm=0.50,
+            cycle_duration_s=25.0,
+            cycles=1,
+            update_rate_hz=10.0,
+            ramp_in_s=0.0,
+            ramp_out_s=0.0,
+            hold_at_start_s=0.0,
+            hold_at_end_s=0.0,
+        )
+        traj_seed_0 = generate_pattern_trajectory(_request(**common, seed=0))
+        traj_seed_99 = generate_pattern_trajectory(_request(**common, seed=99))
+        # Different seeds should give different drift trajectories — pick the
+        # midpoint as a single representative sample.
+        mid = len(traj_seed_0) // 2
+        delta_x = abs(traj_seed_0[mid].bottom_x_cm - traj_seed_99[mid].bottom_x_cm)
+        delta_y = abs(traj_seed_0[mid].bottom_y_cm - traj_seed_99[mid].bottom_y_cm)
+        assert delta_x + delta_y > 0.01, (
+            "slow_drift midpoint identical across seeds 0 and 99 — seed not "
+            "actually steering the random phases"
+        )
+
+    def test_creepy_squid_and_slow_drift_produce_distinct_motion(self) -> None:
+        # The two patterns should not accidentally produce the same trajectory
+        # — they're supposed to feel visibly different (one is jittery /
+        # tentacle-like, the other slow drift).
+        common = dict(
+            amplitude_cm=0.50,
+            cycle_duration_s=25.0,
+            cycles=1,
+            update_rate_hz=10.0,
+            ramp_in_s=0.0,
+            ramp_out_s=0.0,
+            hold_at_start_s=0.0,
+            hold_at_end_s=0.0,
+            seed=0,
+        )
+        squid = generate_pattern_trajectory(_request(pattern=PATTERN_CREEPY_SQUID, **common))
+        drift = generate_pattern_trajectory(_request(pattern=PATTERN_SLOW_DRIFT, **common))
+        diffs = [
+            math.hypot(s.bottom_x_cm - d.bottom_x_cm, s.bottom_y_cm - d.bottom_y_cm)
+            for s, d in zip(squid, drift)
+        ]
+        # Average per-sample distance should be meaningful — not the same shape.
+        assert sum(diffs) / max(1, len(diffs)) > 0.05
+
+    def test_creepy_squid_per_axis_velocity_is_smooth(self) -> None:
+        # The motion should be visually smooth (the GUI streams at 5–10 Hz
+        # in real-time). Per-sample velocity should not exceed a few mm in
+        # one tick at 10 Hz so the operator does not see jerky jumps.
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CREEPY_SQUID,
+                amplitude_cm=0.50,
+                cycle_duration_s=25.0,
+                cycles=1,
+                update_rate_hz=10.0,
+                ramp_in_s=0.0,
+                ramp_out_s=0.0,
+                hold_at_start_s=0.0,
+                hold_at_end_s=0.0,
+            )
+        )
+        previous = traj[0]
+        max_step_cm = 0.0
+        for point in traj[1:]:
+            step = math.hypot(
+                point.bottom_x_cm - previous.bottom_x_cm,
+                point.bottom_y_cm - previous.bottom_y_cm,
+            )
+            if step > max_step_cm:
+                max_step_cm = step
+            previous = point
+        # 0.5 cm amplitude, 0.1 s tick, max step ~ 0.5 cm * ω * dt ≈ 0.5 *
+        # (max_freq_components * 2π/25) * 0.1 ≈ 0.5 * 4.123 * 2π/25 * 0.1
+        # ≈ 0.052 cm. Allow generous 2× headroom for combined-harmonic peaks.
+        assert max_step_cm < 0.15, (
+            f"creepy_squid stepped {max_step_cm:.3f} cm in one 10 Hz tick — "
+            "motion is too jerky"
+        )
