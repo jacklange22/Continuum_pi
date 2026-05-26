@@ -1,17 +1,28 @@
 """Thesis-quality figures for the two-segment collect-pose dataset.
 
-This module mirrors the single-segment ``modeling_dataset_outputs`` figure
-contract and extends it with two-segment-specific diagnostics: per-segment
-command panels, per-segment command-to-pose correlation, an 8-servo
-position-coverage chart grouped by segment, a dataset-quality breakdown
-with rejection reasons, and a per-servo current/load timeline.
+The ``thesis_01`` and ``thesis_02`` writers are direct ports of the
+single-segment ``modeling_dataset_outputs._write_collect_pose_thesis_*``
+functions. The styling (axes, fonts, colorbar layout, title placement,
+metric footer) matches the single-segment figures so that side-by-side
+comparison in the thesis is visually clean.
 
-Figures are intentionally additive — the legacy
-``two_segment_*_report.png`` files written by
-:func:`write_two_segment_dataset_outputs` remain untouched so existing
-tests, run bundles, and operator workflows keep working. Use these
-``thesis_*.png`` files as the canonical thesis evidence set going
-forward.
+Two-segment-specific data shape:
+
+- Distal tip position comes from ``two_segment_pose.distal_tip_pose.T_robot_tip``.
+- Per-segment pair command is derived from ``two_segment_command.segments``
+  using the canonical tip-target convention (``cable_deltas = [-px, -py, +px, +py]``).
+- Two-segment commands carry one pair per segment, so ``thesis_02`` stacks
+  three panels (Segment A pair, Segment B pair, Tip XY) instead of two.
+
+Tracker-variability figures mirror the single-segment averaging plots when
+the experiment captured multiple samples per command (``samples_per_pattern > 1``).
+Per-command spread is computed by grouping the raw post-settle samples by
+``(cycle, step_index)`` rather than from an averaged-sample list, because
+the two-segment experiment does not maintain a separate averaged-sample
+stream — its repeated captures are emitted as independent samples.
+
+The four legacy ``two_segment_*_report.png`` files written by
+:func:`write_two_segment_dataset_outputs` are unaffected.
 """
 
 from __future__ import annotations
@@ -38,9 +49,9 @@ from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 LOG = logging.getLogger(__name__)
 
 
-# Canonical two-segment thesis figure filenames. The numbering matches the
-# single-segment ``thesis_01..thesis_02`` set for the first two figures, then
-# adds two-segment-specific 03..06.
+# Canonical thesis figure filenames. ``thesis_01`` and ``thesis_02`` mirror
+# the single-segment names exactly; ``thesis_03..06`` add two-segment-specific
+# diagnostics that have no single-segment equivalent.
 THESIS_FIGURE_NAMES: tuple[str, ...] = (
     "thesis_01_workspace_coverage_3d.png",
     "thesis_02_command_and_workspace_2d.png",
@@ -49,6 +60,24 @@ THESIS_FIGURE_NAMES: tuple[str, ...] = (
     "thesis_05_dataset_quality.png",
     "thesis_06_current_load_timeline.png",
 )
+
+
+# Tracker-variability figure names mirror the single-segment names. They are
+# only emitted when the run captured more than one sample per command.
+VARIABILITY_FIGURE_NAMES: tuple[str, ...] = (
+    "tracker_variability_workspace_xy.png",
+    "tracker_variability_std_histogram.png",
+    "tracker_variability_std_vs_command_index.png",
+)
+
+
+# Mirror the typography constants in the single-segment variability writers so
+# the two-segment figures match exactly.
+_THESIS_FIG_TITLE_SIZE = 12.5
+_THESIS_FIG_AXES_LABEL_SIZE = 10.5
+_THESIS_FIG_TICK_SIZE = 9.5
+_THESIS_FIG_LEGEND_SIZE = 9.0
+_METRIC_LABEL = "3D RMS spread (mm)"
 
 
 # ----------------------------------------------------------------------------
@@ -74,24 +103,26 @@ def write_two_segment_thesis_figures(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     records = _build_thesis_records(samples)
+    export_rows = _build_export_rows_from_records(records)
+    variability_records = _compute_variability_records(records)
     paths: dict[str, Path] = {}
 
     plot_jobs: list[tuple[str, Path, Callable[[], None]]] = [
         (
             "thesis_01",
             output_dir / "thesis_01_workspace_coverage_3d.png",
-            lambda: _write_workspace_coverage_3d(
+            lambda: _write_two_segment_thesis_01_workspace_coverage_3d(
                 path=output_dir / "thesis_01_workspace_coverage_3d.png",
-                records=records,
+                export_rows=export_rows,
                 metrics=metrics,
             ),
         ),
         (
             "thesis_02",
             output_dir / "thesis_02_command_and_workspace_2d.png",
-            lambda: _write_command_and_workspace_2d(
+            lambda: _write_two_segment_thesis_02_command_and_workspace_2d(
                 path=output_dir / "thesis_02_command_and_workspace_2d.png",
-                records=records,
+                export_rows=export_rows,
                 metrics=metrics,
             ),
         ),
@@ -133,6 +164,35 @@ def write_two_segment_thesis_figures(
             ),
         ),
     ]
+    if variability_records:
+        plot_jobs.extend(
+            [
+                (
+                    "tracker_variability_workspace_xy",
+                    output_dir / "tracker_variability_workspace_xy.png",
+                    lambda: _write_tracker_variability_workspace_xy(
+                        path=output_dir / "tracker_variability_workspace_xy.png",
+                        records=variability_records,
+                    ),
+                ),
+                (
+                    "tracker_variability_std_histogram",
+                    output_dir / "tracker_variability_std_histogram.png",
+                    lambda: _write_tracker_variability_std_histogram(
+                        path=output_dir / "tracker_variability_std_histogram.png",
+                        records=variability_records,
+                    ),
+                ),
+                (
+                    "tracker_variability_std_vs_command_index",
+                    output_dir / "tracker_variability_std_vs_command_index.png",
+                    lambda: _write_tracker_variability_std_vs_command_index(
+                        path=output_dir / "tracker_variability_std_vs_command_index.png",
+                        records=variability_records,
+                    ),
+                ),
+            ]
+        )
     for key, path, writer in plot_jobs:
         try:
             writer()
@@ -207,18 +267,25 @@ def _build_thesis_records(samples: Iterable[ExperimentTimeseriesSample]) -> list
                 goal_ticks[sid] = int(value)
             except (TypeError, ValueError):
                 continue
-        # Pair-axis convention (mirrors single-segment): cable deltas
-        # [c0, c1, c2, c3] correspond to a tip-target pair (px, py) =
-        # (-c0, -c1). When the antagonistic pair is intact this is also
-        # equivalent to (+c2, +c3). The two-segment dataset uses the same
-        # per-segment cable layout, so the same mapping applies per segment.
+        # Pair-axis convention mirrors the single-segment helper exactly:
+        # cable_deltas = [-px, -py, +px, +py] ⇒ pair = (-c0, -c1).
         segment_a_pair = _pair_from_cable_deltas(segment_a)
         segment_b_pair = _pair_from_cable_deltas(segment_b)
+        # ``cycle_index`` lets the variability path group repeated samples
+        # for the same command across multiple passes through the schedule.
+        # ``capture_repeat`` is the same field exposed by single-segment
+        # samples; two-segment names it explicitly in ``extra``.
+        cycle_index_raw = extra.get("cycle_index", getattr(sample, "cycle_index", None))
+        try:
+            cycle_index_value = int(cycle_index_raw) if cycle_index_raw is not None else None
+        except (TypeError, ValueError):
+            cycle_index_value = None
         records.append(
             {
                 "row_index": int(row_index),
                 "sample_index": int(getattr(sample, "sample_index", 0) or 0),
                 "step_index": int(getattr(sample, "step_index", 0) or 0),
+                "cycle_index": cycle_index_value,
                 "monotonic_time_s": float(getattr(sample, "monotonic_time_s", 0.0) or 0.0),
                 "phase": str(getattr(sample, "phase", "") or ""),
                 "accepted": bool(extra.get("capture_accepted")),
@@ -238,8 +305,127 @@ def _build_thesis_records(samples: Iterable[ExperimentTimeseriesSample]) -> list
     return records
 
 
+def _build_export_rows_from_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reshape accepted+poseful records into the same shape ``_build_export_rows`` produces in single-segment.
+
+    The single-segment ``thesis_01`` / ``thesis_02`` writers consume an
+    ``export_rows`` list of dicts with three keys: ``tip_position_xyz_mm``,
+    ``requested_pair_command_cm`` (one pair for single segment), and
+    ``sequence_index``. For two-segment we adopt the same shape but
+    duplicate the pair into per-segment keys so ``thesis_02`` can show
+    both segments without diverging from the single-segment styling.
+    """
+    out: list[dict[str, Any]] = []
+    for record in records:
+        if not bool(record.get("accepted")):
+            continue
+        tip = record.get("tip_xyz_mm")
+        if tip is None:
+            continue
+        seg_a_pair = record.get("segment_a_pair_cm")
+        seg_b_pair = record.get("segment_b_pair_cm")
+        # ``requested_pair_command_cm`` is filled with segment-B pair (the
+        # "second segment that distinguishes this dataset" per the operator
+        # request). This keeps the single-segment writer signature satisfied
+        # when called as-is. Per-segment keys carry the explicit pairs.
+        primary_pair = seg_b_pair if seg_b_pair is not None else seg_a_pair
+        out.append(
+            {
+                "sequence_index": len(out),
+                "tip_position_xyz_mm": [float(tip[0]), float(tip[1]), float(tip[2])],
+                "requested_pair_command_cm": (
+                    [float(primary_pair[0]), float(primary_pair[1])]
+                    if primary_pair is not None
+                    else []
+                ),
+                "segment_a_pair_cm": (
+                    [float(seg_a_pair[0]), float(seg_a_pair[1])]
+                    if seg_a_pair is not None
+                    else []
+                ),
+                "segment_b_pair_cm": (
+                    [float(seg_b_pair[0]), float(seg_b_pair[1])]
+                    if seg_b_pair is not None
+                    else []
+                ),
+            }
+        )
+    return out
+
+
+def _compute_variability_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group raw samples by command and compute per-command position spread.
+
+    The two-segment experiment does not maintain a separate averaged-sample
+    stream the way single-segment does; ``samples_per_pattern`` >1 just
+    emits N independent samples per command. We group by
+    ``(cycle_index, step_index)`` and reduce each group into the same dict
+    shape consumed by the single-segment variability writers.
+
+    Returns an empty list when no command has more than one accepted sample
+    (i.e. ``samples_per_pattern == 1``), so the variability figures are
+    skipped automatically on non-averaged runs.
+    """
+    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for record in records:
+        if not bool(record.get("accepted")):
+            continue
+        if record.get("tip_xyz_mm") is None:
+            continue
+        cycle_idx = int(record.get("cycle_index") or 0)
+        step_idx = int(record.get("step_index") or 0)
+        groups.setdefault((cycle_idx, step_idx), []).append(record)
+    out: list[dict[str, Any]] = []
+    multi_sample_seen = False
+    for (cycle_idx, step_idx), bucket in sorted(groups.items()):
+        if len(bucket) < 2:
+            # Single-sample commands have no within-command spread to plot.
+            # Keep them so a mixed run (some commands repeated, some not)
+            # still surfaces every accepted pose if every command happens to
+            # repeat — but skip the spread metric. The std fields stay None.
+            tip = bucket[0]["tip_xyz_mm"]
+            out.append(
+                {
+                    "command_index": int(step_idx) + int(cycle_idx) * 1_000_000,
+                    "averaged_x_mm": float(tip[0]),
+                    "averaged_y_mm": float(tip[1]),
+                    "averaged_z_mm": float(tip[2]),
+                    "position_std_rms_mm": None,
+                    "position_max_deviation_mm": None,
+                    "first_vs_mean_position_diff_mm": None,
+                    "valid_sample_count": 1,
+                }
+            )
+            continue
+        multi_sample_seen = True
+        positions = np.asarray(
+            [list(r["tip_xyz_mm"]) for r in bucket], dtype=float
+        )
+        mean_xyz = np.mean(positions, axis=0)
+        # Sample stdev (ddof=1) per axis, RMS-combined into a 3D scalar to
+        # match the single-segment ``position_std_rms_mm`` definition.
+        per_axis_std = np.std(positions, axis=0, ddof=1) if positions.shape[0] >= 2 else np.zeros(3)
+        std_rms = float(np.sqrt(float(np.mean(per_axis_std ** 2))))
+        deviations = np.linalg.norm(positions - mean_xyz, axis=1)
+        first_vs_mean = float(np.linalg.norm(positions[0] - mean_xyz))
+        out.append(
+            {
+                "command_index": int(step_idx) + int(cycle_idx) * 1_000_000,
+                "averaged_x_mm": float(mean_xyz[0]),
+                "averaged_y_mm": float(mean_xyz[1]),
+                "averaged_z_mm": float(mean_xyz[2]),
+                "position_std_rms_mm": std_rms,
+                "position_max_deviation_mm": float(np.max(deviations)),
+                "first_vs_mean_position_diff_mm": first_vs_mean,
+                "valid_sample_count": int(positions.shape[0]),
+            }
+        )
+    if not multi_sample_seen:
+        return []
+    return out
+
+
 def _pair_from_cable_deltas(cable_deltas: list[float]) -> tuple[float, float] | None:
-    """Map a 4-tendon cable vector to a tip-target pair using the canonical convention."""
     if not cable_deltas:
         return None
     if len(cable_deltas) < 2:
@@ -256,12 +442,6 @@ def _vector_magnitude(values: list[float]) -> float:
 
 
 def _truncate_reason_label(name: str, *, max_chars: int = 64) -> str:
-    """Truncate a rejection reason to a reasonable width without collapsing distinct strings.
-
-    Long reasons get an ellipsis; short reasons are returned unchanged. The
-    cap is wide enough that error strings differing in their tail (servo id,
-    register name) do not collide into duplicate y-axis ticks.
-    """
     text = str(name)
     if len(text) <= max_chars:
         return text
@@ -269,264 +449,375 @@ def _truncate_reason_label(name: str, *, max_chars: int = 64) -> str:
 
 
 def _downsample_indices(point_count: int, *, max_points: int) -> np.ndarray | None:
-    """Return evenly spaced indices into a length-N sequence capped at max_points.
-
-    Used by the high-density timeline figure so a 50k-row run does not draw
-    50k × 8 polyline segments per servo (the resulting PNG is unreadable and
-    expensive to render). Returns ``None`` when no downsampling is needed.
-    """
     if point_count <= max_points or max_points <= 0:
         return None
     return np.linspace(0, point_count - 1, num=max_points, dtype=int)
 
 
 def _accepted_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Subset to accepted samples that carry a tip position."""
     return [r for r in records if bool(r.get("accepted")) and r.get("tip_xyz_mm") is not None]
 
 
-def _command_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Subset to accepted samples with both segment pairs available."""
-    return [
-        r for r in records
-        if bool(r.get("accepted"))
-        and r.get("segment_a_pair_cm") is not None
-        and r.get("segment_b_pair_cm") is not None
-    ]
+def _compact_strip(items: list[str | None]) -> list[str]:
+    return [str(item) for item in items if item]
 
 
 # ----------------------------------------------------------------------------
-# Figures
+# Thesis figures 01 + 02 — direct ports of single-segment
 # ----------------------------------------------------------------------------
 
 
-def _write_workspace_coverage_3d(
+def _write_two_segment_thesis_01_workspace_coverage_3d(
     *,
     path: Path,
-    records: list[dict[str, Any]],
+    export_rows: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 1: 3D distal tip scatter coloured by sample index.
+    """Direct port of single-segment ``_write_collect_pose_thesis_01_workspace_coverage_3d``.
 
-    Mirrors the single-segment ``thesis_01_workspace_coverage_3d`` figure.
-    Each point is one accepted distal tip pose; colour encodes order in the
-    collection sequence (viridis from first to last). When intermediate
-    pose is available it is overlaid as a translucent secondary cloud so
-    the operator can see whether the bottom segment articulates separately
-    from the distal tip.
+    Reads only ``tip_position_xyz_mm`` from the export rows so the source
+    behaviour matches what the single-segment writer does for the
+    ``collect_pose_command_dataset`` figure of the same name. The figure
+    title and footer use the two-segment ``schedule_type`` so the figure
+    is unambiguous when filed alongside a single-segment figure.
     """
-    accepted = _accepted_records(records)
-    fig, ax = create_3d_figure(size="thesis_3d")
-    schedule = str(metrics.get("schedule_type") or "unknown").replace("_", " ")
+    points: list[tuple[float, float, float]] = []
+    for row in export_rows:
+        tip = row.get("tip_position_xyz_mm")
+        if not (isinstance(tip, list) and len(tip) >= 3):
+            continue
+        try:
+            points.append((float(tip[0]), float(tip[1]), float(tip[2])))
+        except (TypeError, ValueError):
+            continue
 
-    if not accepted:
-        ax.text2D(
-            0.5, 0.5, "No accepted distal tip poses available",
-            transform=ax.transAxes, ha="center", va="center",
-        )
-        style_3d_axes(ax)
-        fig.suptitle(
-            "Two-Segment Workspace Coverage During Collect-Pose"
-            f"  ({schedule})",
-            fontsize=13, fontweight="bold", x=0.04, ha="left",
-        )
+    fig, ax = create_3d_figure(size="thesis_3d")
+    if not points:
+        ax.text2D(0.5, 0.5, "No accepted tip positions available",
+                  transform=ax.transAxes, ha="center", va="center")
+        style_3d_axes(ax, title="")
+        fig.suptitle("Two-Segment Workspace Coverage During Babble Collection",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
         save_figure(fig, path)
         return
 
-    xs = [float(r["tip_xyz_mm"][0]) for r in accepted]
-    ys = [float(r["tip_xyz_mm"][1]) for r in accepted]
-    zs = [float(r["tip_xyz_mm"][2]) for r in accepted]
-    indices = np.arange(len(accepted), dtype=float)
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    zs = [point[2] for point in points]
+    indices = np.arange(len(points), dtype=float)
+
     scatter = ax.scatter(
         xs, ys, zs,
         c=indices, cmap="viridis",
         s=14, depthshade=True, alpha=0.85, linewidths=0,
-        label="distal tip",
     )
 
-    intermediate_pts = [
-        (float(r["intermediate_xyz_mm"][0]), float(r["intermediate_xyz_mm"][1]), float(r["intermediate_xyz_mm"][2]))
-        for r in accepted
-        if r.get("intermediate_xyz_mm") is not None
-    ]
-    if intermediate_pts:
-        ix = [pt[0] for pt in intermediate_pts]
-        iy = [pt[1] for pt in intermediate_pts]
-        iz = [pt[2] for pt in intermediate_pts]
-        ax.scatter(
-            ix, iy, iz,
-            color=color("segment_a"),
-            s=10, depthshade=True, alpha=0.35, linewidths=0,
-            label="intermediate (proximal segment tip)",
-        )
-
-    set_equal_xyz(
-        ax,
-        x_values=xs + [pt[0] for pt in intermediate_pts],
-        y_values=ys + [pt[1] for pt in intermediate_pts],
-        z_values=zs + [pt[2] for pt in intermediate_pts],
-        minimum_span=5.0,
-        pad_fraction=0.08,
-    )
+    set_equal_xyz(ax, x_values=xs, y_values=ys, z_values=zs, minimum_span=5.0, pad_fraction=0.08)
     style_3d_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)", zlabel="Robot Z (mm)")
-    ax.legend(loc="upper left", fontsize=9, framealpha=0.92)
 
     cbar = fig.colorbar(scatter, ax=ax, shrink=0.55, pad=0.12)
     cbar.set_label("Sample index (time order)")
     cbar.outline.set_edgecolor(color("grid"))
 
-    fig.suptitle(
-        f"Two-Segment Workspace Coverage During Collect-Pose  ({schedule})",
-        fontsize=13, fontweight="bold", x=0.04, ha="left",
-    )
+    mode = str(metrics.get("schedule_type", "unknown") or "unknown").replace("_", " ")
+    fig.suptitle(f"Two-Segment Workspace Coverage During Babble Collection  ({mode})",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
 
-    accepted_count = int(metrics.get("accepted_sample_count") or len(accepted))
-    rejected_count = int(metrics.get("rejected_sample_count") or 0)
-    total = accepted_count + rejected_count
-    accept_rate = (accepted_count / total * 100.0) if total > 0 else 100.0
-    x_span = (max(xs) - min(xs)) if xs else 0.0
-    y_span = (max(ys) - min(ys)) if ys else 0.0
-    z_span = (max(zs) - min(zs)) if zs else 0.0
+    x_span = max(xs) - min(xs)
+    y_span = max(ys) - min(ys)
+    z_span = max(zs) - min(zs)
+    accepted = int(metrics.get("accepted_sample_count", len(points)) or len(points))
+    rejected = int(metrics.get("rejected_sample_count", 0) or 0)
+    total = accepted + rejected
+    accept_rate = (accepted / total * 100.0) if total > 0 else 100.0
     fig.text(
         0.015, 0.02,
-        "  •  ".join(
-            [
-                f"Schedule: {schedule}",
-                f"Accepted: {accepted_count}/{total}  ({accept_rate:.1f}%)",
-                f"Workspace span: X={x_span:.1f} mm  Y={y_span:.1f} mm  Z={z_span:.1f} mm",
-                (
-                    f"Distal+intermediate poses available"
-                    if intermediate_pts
-                    else "Distal-only pose (intermediate tracker unavailable)"
-                ),
-            ]
-        ),
+        "  •  ".join(_compact_strip([
+            f"Mode: {mode}",
+            f"Accepted: {accepted}/{total}  ({accept_rate:.1f}%)",
+            f"Workspace span: X={x_span:.1f} mm  Y={y_span:.1f} mm  Z={z_span:.1f} mm",
+        ])),
         fontsize=9, color=color("text"), ha="left", va="bottom",
         bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
     )
     save_figure(fig, path)
 
 
-def _write_command_and_workspace_2d(
+def _write_two_segment_thesis_02_command_and_workspace_2d(
     *,
     path: Path,
-    records: list[dict[str, Any]],
+    export_rows: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 2: 2x2 panel — per-segment command + tip XY/XZ.
+    """Direct port of single-segment ``_write_collect_pose_thesis_02_command_and_workspace_2d``.
 
-    Two-segment extension of the single-segment ``thesis_02`` figure: the
-    top row carries segment-A and segment-B pair commands (tip-target
-    convention) so the reader can see each segment's command space
-    independently; the bottom row carries the distal tip XY (top-down) and
-    XZ (side) projections. All panels share the sample-index colour scale.
+    Two-segment commands carry one pair per segment, so this stacks three
+    panels instead of two: Segment A pair on top, Segment B pair in the
+    middle, distal tip XY on the bottom. All panels share the time-order
+    colour scale so a single dot colour traces one accepted sample across
+    the three panels. Layout, styling, footer and colorbar placement
+    follow the single-segment figure exactly.
     """
-    accepted_command = _command_records(records)
-    schedule = str(metrics.get("schedule_type") or "unknown").replace("_", " ")
-    with report_style() as plt:
-        fig, axes = plt.subplots(2, 2, figsize=(9.6, 8.2), constrained_layout=False)
-    fig.subplots_adjust(left=0.08, right=0.88, top=0.92, bottom=0.10, hspace=0.34, wspace=0.30)
-    ax_top_a, ax_top_b = axes[0]
-    ax_bot_left, ax_bot_right = axes[1]
+    seg_a_cmds: list[tuple[float, float]] = []
+    seg_b_cmds: list[tuple[float, float]] = []
+    tip_xy: list[tuple[float, float]] = []
+    indices: list[int] = []
+    for index, row in enumerate(export_rows):
+        tip = row.get("tip_position_xyz_mm")
+        if not (isinstance(tip, list) and len(tip) >= 2):
+            continue
+        seg_a = row.get("segment_a_pair_cm")
+        seg_b = row.get("segment_b_pair_cm")
+        if not (isinstance(seg_a, list) and len(seg_a) >= 2):
+            continue
+        if not (isinstance(seg_b, list) and len(seg_b) >= 2):
+            continue
+        try:
+            seg_a_cmds.append((float(seg_a[0]), float(seg_a[1])))
+            seg_b_cmds.append((float(seg_b[0]), float(seg_b[1])))
+            tip_xy.append((float(tip[0]), float(tip[1])))
+        except (TypeError, ValueError):
+            continue
+        indices.append(index)
 
-    if not accepted_command:
-        for ax in axes.flatten():
-            ax.text(
-                0.5, 0.5, "No accepted command/pose samples available",
-                transform=ax.transAxes, ha="center", va="center",
-            )
-        fig.suptitle(
-            "Two-Segment Command Space + Distal Tip Workspace"
-            f"  ({schedule})",
-            fontsize=13, fontweight="bold", x=0.04, ha="left",
+    with report_style() as plt:
+        fig, (ax_a, ax_b, ax_tip) = plt.subplots(
+            3, 1, figsize=(7.6, 10.4), constrained_layout=False,
         )
+    fig.subplots_adjust(left=0.10, right=0.86, top=0.93, bottom=0.10, hspace=0.32)
+
+    if not seg_a_cmds or not tip_xy:
+        for ax in (ax_a, ax_b, ax_tip):
+            ax.text(0.5, 0.5, "No accepted samples available",
+                    transform=ax.transAxes, ha="center", va="center")
+        fig.suptitle("Two-Segment Command Space (top/middle) and Tip Workspace XY (bottom)",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
         save_figure(fig, path)
         return
 
-    indices = np.arange(len(accepted_command), dtype=float)
-    seg_a = [r["segment_a_pair_cm"] for r in accepted_command]
-    seg_b = [r["segment_b_pair_cm"] for r in accepted_command]
-    seg_a_x = [pair[0] for pair in seg_a]
-    seg_a_y = [pair[1] for pair in seg_a]
-    seg_b_x = [pair[0] for pair in seg_b]
-    seg_b_y = [pair[1] for pair in seg_b]
+    color_values = np.asarray(indices, dtype=float)
 
-    sc_top_a = ax_top_a.scatter(
-        seg_a_x, seg_a_y, c=indices, cmap="viridis",
-        s=14, alpha=0.85, linewidths=0,
-    )
-    style_axes(ax_top_a, xlabel="Segment A pair X (cm)", ylabel="Segment A pair Y (cm)")
-    ax_top_a.set_title("Segment A command space", loc="left", pad=8, fontsize=11, fontweight="bold")
-    ax_top_a.set_aspect("equal", adjustable="datalim")
+    ax_x = [point[0] for point in seg_a_cmds]
+    ax_y = [point[1] for point in seg_a_cmds]
+    sc = ax_a.scatter(ax_x, ax_y, c=color_values, cmap="viridis",
+                      s=14, alpha=0.85, linewidths=0)
+    style_axes(ax_a, xlabel="Pair 1/3 command (cm)", ylabel="Pair 2/4 command (cm)")
+    ax_a.set_title("Segment A command space", loc="left", pad=8, fontsize=11, fontweight="bold")
+    ax_a.set_aspect("equal", adjustable="datalim")
 
-    ax_top_b.scatter(
-        seg_b_x, seg_b_y, c=indices, cmap="viridis",
-        s=14, alpha=0.85, linewidths=0,
-    )
-    style_axes(ax_top_b, xlabel="Segment B pair X (cm)", ylabel="Segment B pair Y (cm)")
-    ax_top_b.set_title("Segment B command space", loc="left", pad=8, fontsize=11, fontweight="bold")
-    ax_top_b.set_aspect("equal", adjustable="datalim")
+    bx_x = [point[0] for point in seg_b_cmds]
+    bx_y = [point[1] for point in seg_b_cmds]
+    ax_b.scatter(bx_x, bx_y, c=color_values, cmap="viridis",
+                 s=14, alpha=0.85, linewidths=0)
+    style_axes(ax_b, xlabel="Pair 1/3 command (cm)", ylabel="Pair 2/4 command (cm)")
+    ax_b.set_title("Segment B command space", loc="left", pad=8, fontsize=11, fontweight="bold")
+    ax_b.set_aspect("equal", adjustable="datalim")
 
-    tip_records = [r for r in accepted_command if r.get("tip_xyz_mm") is not None]
-    if tip_records:
-        tip_indices = np.arange(len(tip_records), dtype=float)
-        tip_x = [float(r["tip_xyz_mm"][0]) for r in tip_records]
-        tip_y = [float(r["tip_xyz_mm"][1]) for r in tip_records]
-        tip_z = [float(r["tip_xyz_mm"][2]) for r in tip_records]
-        ax_bot_left.scatter(
-            tip_x, tip_y, c=tip_indices, cmap="viridis",
-            s=14, alpha=0.85, linewidths=0,
-        )
-        ax_bot_right.scatter(
-            tip_x, tip_z, c=tip_indices, cmap="viridis",
-            s=14, alpha=0.85, linewidths=0,
-        )
-    else:
-        for ax in (ax_bot_left, ax_bot_right):
-            ax.text(
-                0.5, 0.5, "No distal tip poses captured",
-                transform=ax.transAxes, ha="center", va="center",
-            )
-    style_axes(ax_bot_left, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
-    ax_bot_left.set_title("Distal tip XY (top-down)", loc="left", pad=8, fontsize=11, fontweight="bold")
-    ax_bot_left.set_aspect("equal", adjustable="datalim")
-    style_axes(ax_bot_right, xlabel="Robot X (mm)", ylabel="Robot Z (mm)")
-    ax_bot_right.set_title("Distal tip XZ (side)", loc="left", pad=8, fontsize=11, fontweight="bold")
-    ax_bot_right.set_aspect("equal", adjustable="datalim")
+    tip_x = [point[0] for point in tip_xy]
+    tip_y = [point[1] for point in tip_xy]
+    ax_tip.scatter(tip_x, tip_y, c=color_values, cmap="viridis",
+                   s=14, alpha=0.85, linewidths=0)
+    style_axes(ax_tip, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+    ax_tip.set_title("Distal tip workspace (top-down XY)", loc="left", pad=8, fontsize=11, fontweight="bold")
+    ax_tip.set_aspect("equal", adjustable="datalim")
 
-    cbar = fig.colorbar(sc_top_a, ax=axes.ravel().tolist(), shrink=0.85, pad=0.02)
+    cbar = fig.colorbar(sc, ax=(ax_a, ax_b, ax_tip), shrink=0.85, pad=0.025)
     cbar.set_label("Sample index (time order)")
     cbar.outline.set_edgecolor(color("grid"))
 
-    fig.suptitle(
-        f"Two-Segment Command Space + Distal Tip Workspace  —  {schedule}",
-        fontsize=13, fontweight="bold", x=0.04, ha="left",
-    )
+    mode = str(metrics.get("schedule_type", "unknown") or "unknown").replace("_", " ")
+    fig.suptitle(f"Two-Segment Command Space (top/middle) and Tip Workspace XY (bottom)  —  {mode}",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
 
-    a_x_span = max(seg_a_x) - min(seg_a_x)
-    a_y_span = max(seg_a_y) - min(seg_a_y)
-    b_x_span = max(seg_b_x) - min(seg_b_x)
-    b_y_span = max(seg_b_y) - min(seg_b_y)
-    summary = [
-        f"Samples: {len(accepted_command)}",
-        f"Seg-A pair extent: X {a_x_span:.2f} cm, Y {a_y_span:.2f} cm",
-        f"Seg-B pair extent: X {b_x_span:.2f} cm, Y {b_y_span:.2f} cm",
-    ]
-    if tip_records:
-        tip_x_arr = np.asarray([r["tip_xyz_mm"][0] for r in tip_records], dtype=float)
-        tip_y_arr = np.asarray([r["tip_xyz_mm"][1] for r in tip_records], dtype=float)
-        tip_z_arr = np.asarray([r["tip_xyz_mm"][2] for r in tip_records], dtype=float)
-        summary.append(
-            f"Tip extent: X {float(np.ptp(tip_x_arr)):.1f} mm, "
-            f"Y {float(np.ptp(tip_y_arr)):.1f} mm, Z {float(np.ptp(tip_z_arr)):.1f} mm"
-        )
+    a_x_span = max(ax_x) - min(ax_x)
+    a_y_span = max(ax_y) - min(ax_y)
+    b_x_span = max(bx_x) - min(bx_x)
+    b_y_span = max(bx_y) - min(bx_y)
+    tip_x_span = max(tip_x) - min(tip_x)
+    tip_y_span = max(tip_y) - min(tip_y)
     fig.text(
-        0.015, 0.02,
-        "  •  ".join(summary),
+        0.015, 0.015,
+        "  •  ".join(_compact_strip([
+            f"Samples: {len(tip_xy)}",
+            f"Seg-A extent: pair_13 {a_x_span:.2f} cm, pair_24 {a_y_span:.2f} cm",
+            f"Seg-B extent: pair_13 {b_x_span:.2f} cm, pair_24 {b_y_span:.2f} cm",
+            f"Tip XY extent: X {tip_x_span:.1f} mm, Y {tip_y_span:.1f} mm",
+        ])),
         fontsize=9, color=color("text"), ha="left", va="bottom",
         bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
     )
     save_figure(fig, path)
+
+
+# ----------------------------------------------------------------------------
+# Tracker variability figures — direct ports of single-segment
+# ----------------------------------------------------------------------------
+
+
+def _set_variability_title(fig, title: str) -> None:
+    fig.suptitle(
+        title,
+        fontsize=_THESIS_FIG_TITLE_SIZE,
+        fontweight="bold",
+        x=0.04,
+        ha="left",
+        y=0.975,
+    )
+
+
+def _set_variability_tick_sizes(ax) -> None:
+    ax.tick_params(axis="both", labelsize=_THESIS_FIG_TICK_SIZE)
+    ax.xaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    ax.yaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+
+
+def _write_tracker_variability_workspace_xy(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """Direct port of single-segment ``_write_tracker_variability_workspace_xy``.
+
+    Each marker is one commanded pose plotted at its averaged tip XY in the
+    robot frame; colour encodes the per-command 3D RMS spread across the
+    repeated samples at that command. For two-segment, the "repeated
+    samples per command" are the ``samples_per_pattern`` post-settle
+    captures.
+    """
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.2, 6.5), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.88, top=0.90, bottom=0.12)
+
+    valid = [
+        (r["averaged_x_mm"], r["averaged_y_mm"], r["position_std_rms_mm"])
+        for r in records
+        if r["position_std_rms_mm"] is not None
+    ]
+    if not valid:
+        ax.text(0.5, 0.5, "No averaged samples with position spread data",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
+        style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+        _set_variability_title(fig, "Workspace Variability")
+        save_figure(fig, path)
+        return
+
+    xs = [v[0] for v in valid]
+    ys = [v[1] for v in valid]
+    stds = [v[2] for v in valid]
+    scatter = ax.scatter(
+        xs, ys,
+        c=stds,
+        cmap="plasma",
+        s=44,
+        edgecolors="white",
+        linewidths=0.45,
+        alpha=0.95,
+    )
+    ax.set_aspect("equal", adjustable="datalim")
+    style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+    _set_variability_tick_sizes(ax)
+
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.048, pad=0.025, shrink=0.88)
+    cbar.set_label(_METRIC_LABEL, fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
+    cbar.ax.tick_params(labelsize=_THESIS_FIG_TICK_SIZE)
+    cbar.outline.set_edgecolor(color("grid"))
+
+    _set_variability_title(fig, "Workspace Variability")
+    save_figure(fig, path)
+
+
+def _write_tracker_variability_std_histogram(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """Direct port of single-segment ``_write_tracker_variability_std_histogram``."""
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.6, 4.4), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.98, top=0.86, bottom=0.16)
+
+    stds = [r["position_std_rms_mm"] for r in records if r["position_std_rms_mm"] is not None]
+    if not stds:
+        ax.text(0.5, 0.5, "No averaged samples with position spread data",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
+        style_axes(ax, xlabel=_METRIC_LABEL, ylabel="Command count")
+        _set_variability_title(fig, "Spread Distribution")
+        save_figure(fig, path)
+        return
+    arr = np.asarray(stds, dtype=float)
+    bins = min(30, max(10, len(arr) // 4))
+    ax.hist(arr, bins=bins, color=color("measured"), edgecolor="white", alpha=0.92)
+    median = float(np.median(arr))
+    p95 = float(np.percentile(arr, 95))
+    ax.axvline(median, color=color("reference"), linestyle="--", linewidth=1.4,
+               label=f"median {median:.3f}")
+    ax.axvline(p95, color=color("rejected"), linestyle="-.", linewidth=1.3,
+               label=f"p95 {p95:.3f}")
+    style_axes(ax, xlabel=_METRIC_LABEL, ylabel="Command count")
+    _set_variability_tick_sizes(ax)
+    legend_obj = ax.legend(loc="upper right", frameon=True, facecolor="white",
+                           edgecolor=color("grid"), framealpha=0.95,
+                           fontsize=_THESIS_FIG_LEGEND_SIZE)
+    if legend_obj is not None:
+        legend_obj.get_frame().set_linewidth(0.6)
+    _set_variability_title(fig, "Spread Distribution")
+    save_figure(fig, path)
+
+
+def _write_tracker_variability_std_vs_command_index(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """Direct port of single-segment ``_write_tracker_variability_std_vs_command_index``."""
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.8, 4.4), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.98, top=0.86, bottom=0.16)
+
+    rows_sorted = sorted(
+        (r for r in records if r["position_std_rms_mm"] is not None),
+        key=lambda r: int(r["command_index"]),
+    )
+    if not rows_sorted:
+        ax.text(0.5, 0.5, "No averaged samples with position spread data",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
+        style_axes(ax, xlabel="Command index (collection order)",
+                   ylabel=_METRIC_LABEL)
+        _set_variability_title(fig, "Variability Over Collection")
+        save_figure(fig, path)
+        return
+    xs = list(range(len(rows_sorted)))
+    ys = [float(r["position_std_rms_mm"]) for r in rows_sorted]
+    ax.plot(xs, ys, color=color("measured"), linewidth=0.8,
+            marker="o", markersize=3.0, markerfacecolor=color("measured"),
+            markeredgecolor="white", markeredgewidth=0.25, alpha=0.80,
+            label="command")
+    window = max(5, len(ys) // 20)
+    if len(ys) >= window:
+        kernel = np.ones(window) / float(window)
+        smoothed = np.convolve(ys, kernel, mode="valid")
+        smooth_x = xs[(window - 1) // 2 : (window - 1) // 2 + len(smoothed)]
+        if len(smooth_x) == len(smoothed):
+            ax.plot(smooth_x, smoothed, color=color("rejected"),
+                    linewidth=1.6, label=f"rolling mean ({window})")
+    style_axes(ax, xlabel="Command index (collection order)",
+               ylabel=_METRIC_LABEL)
+    _set_variability_tick_sizes(ax)
+    legend_obj = ax.legend(loc="upper right", frameon=True, facecolor="white",
+                           edgecolor=color("grid"), framealpha=0.95,
+                           fontsize=_THESIS_FIG_LEGEND_SIZE)
+    if legend_obj is not None:
+        legend_obj.get_frame().set_linewidth(0.6)
+    _set_variability_title(fig, "Variability Over Collection")
+    save_figure(fig, path)
+
+
+# ----------------------------------------------------------------------------
+# Two-segment specific diagnostics (thesis_03..06)
+# ----------------------------------------------------------------------------
 
 
 def _write_per_segment_command_pose(
@@ -535,15 +826,7 @@ def _write_per_segment_command_pose(
     records: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 3: per-segment command magnitude vs distal tip excursion.
-
-    Two diagnostic scatters that surface how each segment couples into the
-    distal tip position. A two-segment robot where the top segment is
-    actually articulating should show a stronger correlation between
-    segment-B (top) command magnitude and tip-from-startup excursion than
-    segment-A alone. Useful for sanity-checking the routing compensation
-    and the operator's segment assignment.
-    """
+    """Per-segment command magnitude vs distal tip excursion."""
     accepted = [r for r in records if bool(r.get("accepted")) and r.get("tip_xyz_mm") is not None]
     schedule = str(metrics.get("schedule_type") or "unknown").replace("_", " ")
     with report_style() as plt:
@@ -557,8 +840,7 @@ def _write_per_segment_command_pose(
                 transform=ax.transAxes, ha="center", va="center",
             )
         fig.suptitle(
-            "Per-Segment Command Magnitude vs Distal Tip Excursion"
-            f"  ({schedule})",
+            f"Per-Segment Command Magnitude vs Distal Tip Excursion  ({schedule})",
             fontsize=13, fontweight="bold", x=0.04, ha="left",
         )
         save_figure(fig, path)
@@ -620,14 +902,7 @@ def _write_servo_position_coverage(
     records: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 4: 8-servo position coverage grouped by segment.
-
-    Top panel: per-servo observed-range bar chart, with the safety
-    ``max_tick_delta_from_startup`` envelope drawn as a horizontal dashed
-    reference. Bottom panel: per-servo ``delta_from_startup`` box plot so
-    the operator can see distribution shape (sample spread, asymmetry)
-    rather than just min/max.
-    """
+    """8-servo position coverage grouped by segment."""
     servo_positions: dict[int, list[int]] = {sid: [] for sid in range(1, 9)}
     servo_deltas: dict[int, list[int]] = {sid: [] for sid in range(1, 9)}
     for record in records:
@@ -667,9 +942,6 @@ def _write_servo_position_coverage(
     ax_top.bar(servo_ids, ranges, color=bar_colors, edgecolor="white", linewidth=0.6)
     ax_top.axvline(4.5, color=color("threshold"), linestyle="--", linewidth=1.0)
     if max_tick_delta is not None and max_tick_delta > 0:
-        # max_tick_delta_from_startup is a per-servo *one-sided* tick budget;
-        # the worst-case observed range from end to end is 2*budget if the
-        # trajectory swings through both extremes.
         twice_budget = 2 * int(max_tick_delta)
         ax_top.axhline(
             twice_budget,
@@ -737,13 +1009,7 @@ def _write_dataset_quality(
     metrics: dict[str, Any],
     sample_failure_events: list[dict[str, Any]],
 ) -> None:
-    """Thesis figure 5: accepted vs rejected breakdown + rejection-reason bar.
-
-    Replaces the bare 3-bar legacy figure with a thesis-quality two-panel
-    layout that surfaces (1) the high-level outcome counts and (2) the
-    rejection-reason distribution so the operator can argue *why* a run is
-    or isn't trainable, not just the headline number.
-    """
+    """Accepted vs rejected breakdown + rejection-reason bar."""
     accepted = int(metrics.get("accepted_sample_count") or 0)
     rejected = int(metrics.get("rejected_sample_count") or 0)
     failures = int(metrics.get("command_failure_count") or 0)
@@ -754,8 +1020,6 @@ def _write_dataset_quality(
             continue
         reason = (record.get("rejection_reason") or "").strip() or "unspecified"
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
-    # Include transport-event reasons from the failure events log when sample
-    # rejection didn't surface them directly.
     for event in sample_failure_events:
         reason = str(event.get("reason") or event.get("error") or "transport_event").strip()
         if not reason:
@@ -798,10 +1062,6 @@ def _write_dataset_quality(
             other_total = sum(count for _, count in sorted_reasons[8:])
             if other_total > 0:
                 top_reasons.append(("other", other_total))
-        # Render reasons at full length up to a wide cap so distinct error
-        # strings (e.g. "Failed to write goal position for servo 3" vs
-        # "Failed to write torque enable for servo 7") never collapse into
-        # the same row. Matplotlib will wrap them visually if needed.
         labels = [_truncate_reason_label(name) for name, _ in top_reasons]
         counts = [int(count) for _, count in top_reasons]
         y_positions = np.arange(len(labels))
@@ -854,21 +1114,9 @@ def _write_current_load_timeline(
     records: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 6: per-servo current/load over collection order.
-
-    For each servo the figure draws a downsampled load-proxy trace plus a
-    per-servo rolling-mean envelope so the reader can pick out trends in
-    high-density runs without being overwhelmed by point-level jitter.
-    The configured warning and sustained-jam thresholds appear as
-    horizontal references. Operator-facing: useful for spotting a servo
-    that drifted toward jam over a long run, or a transport event that
-    landed the trace flat at zero.
-    """
+    """Per-servo current/load over collection order."""
     sequence: dict[int, list[tuple[int, float]]] = {sid: [] for sid in range(1, 9)}
     for record in records:
-        # row_index is monotonic across the whole run; sample_index resets
-        # each command step in the two-segment schedule so it makes a poor
-        # x-axis on its own (the figure would only span 0..N-per-step).
         row_index = int(record.get("row_index") or 0)
         for sid, payload in (record.get("feedback_by_servo") or {}).items():
             load = payload.get("load_proxy_ma")
@@ -896,8 +1144,6 @@ def _write_current_load_timeline(
     fig.subplots_adjust(left=0.08, right=0.97, top=0.88, bottom=0.14)
 
     any_data = False
-    # Per-servo display budget for raw points; a long run (50k+ rows) will
-    # otherwise produce an unreadable solid block of overlapping lines.
     max_points_per_servo = 2000
     for sid in sorted(sequence):
         points = sequence.get(sid) or []
@@ -919,8 +1165,6 @@ def _write_current_load_timeline(
             color=servo_color, alpha=alpha,
             linewidth=0.7, label=f"servo {sid}",
         )
-        # Rolling envelope so trend is visible through the haze. Skip when
-        # we have very few samples (avoid a meaningless 1-point line).
         if ys_full.size >= 50:
             window = max(25, ys_full.size // 200)
             kernel = np.ones(window) / float(window)
@@ -944,8 +1188,6 @@ def _write_current_load_timeline(
             0.5, 0.5, "No servo load telemetry available",
             transform=ax.transAxes, ha="center", va="center",
         )
-    # Lock the x-axis to plain integer notation so the sample-index scale
-    # never reads as 10^4 multipliers in the rendered PNG.
     try:
         import matplotlib.ticker as mticker
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda value, _pos: f"{int(value):,}"))
@@ -963,7 +1205,6 @@ def _write_current_load_timeline(
         "Two-Segment Current/Load Timeline",
         fontsize=13, fontweight="bold", x=0.04, ha="left",
     )
-    # Stat strip footer
     all_values: list[float] = []
     for sid, items in sequence.items():
         all_values.extend(float(v) for _, v in items)
@@ -994,7 +1235,7 @@ def _write_current_load_timeline(
 
 
 # ----------------------------------------------------------------------------
-# Plot placeholder helper (mirrors single-segment for graceful failures)
+# Plot placeholder helper
 # ----------------------------------------------------------------------------
 
 

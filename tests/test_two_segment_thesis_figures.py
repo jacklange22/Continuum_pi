@@ -25,9 +25,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.experiments.two_segment_modeling_dataset_outputs import (
     THESIS_FIGURE_NAMES,
+    VARIABILITY_FIGURE_NAMES,
     _accepted_records,
+    _build_export_rows_from_records,
     _build_thesis_records,
-    _command_records,
+    _compute_variability_records,
     _pair_from_cable_deltas,
     _vector_magnitude,
     write_two_segment_thesis_figures,
@@ -61,6 +63,8 @@ def _make_sample(
     feedback_currents: dict[int, int] | None = None,
     feedback_positions: dict[int, int] | None = None,
     delta_from_startup: dict[int, int] | None = None,
+    cycle_index: int = 0,
+    step_index: int | None = None,
 ) -> ExperimentTimeseriesSample:
     seg_a = list(segment_a) if segment_a is not None else [0.0, 0.0, 0.0, 0.0]
     seg_b = list(segment_b) if segment_b is not None else [0.0, 0.0, 0.0, 0.0]
@@ -99,13 +103,15 @@ def _make_sample(
         "measured_servo_feedback": feedback,
         "goal_ticks_by_servo": {str(sid): 2048 for sid in range(1, 9)},
         "available_pose_roles": ["distal_tip"] if tip_xyz_mm else [],
+        "cycle_index": int(cycle_index),
     }
     return ExperimentTimeseriesSample(
         monotonic_time_s=float(sample_index) * 0.5,
         wall_time_utc="2026-05-26T00:00:00+00:00",
         phase=phase,
-        step_index=int(sample_index // 4),
+        step_index=int(step_index if step_index is not None else sample_index // 4),
         sample_index=int(sample_index),
+        cycle_index=int(cycle_index),
         two_segment_command={
             "schema_version": "2segment_cmd_v1",
             "segments": {"segment_a": seg_a, "segment_b": seg_b},
@@ -187,15 +193,179 @@ def test_build_thesis_records_extracts_command_pose_feedback() -> None:
     assert record["feedback_by_servo"][1]["load_proxy_ma"] > 0
 
 
-def test_accepted_and_command_record_filters_exclude_rejected_and_pose_missing() -> None:
+def test_accepted_filter_excludes_rejected_and_pose_missing() -> None:
     samples = _seeded_samples(count=10)
     records = _build_thesis_records(samples)
     accepted = _accepted_records(records)
     assert all(r["accepted"] for r in accepted)
     assert all(r["tip_xyz_mm"] is not None for r in accepted)
-    cmd_records = _command_records(records)
-    assert all(r["segment_a_pair_cm"] is not None for r in cmd_records)
-    assert all(r["segment_b_pair_cm"] is not None for r in cmd_records)
+
+
+def test_build_export_rows_carries_tip_and_per_segment_pair_keys() -> None:
+    samples = _seeded_samples(count=8)
+    records = _build_thesis_records(samples)
+    export_rows = _build_export_rows_from_records(records)
+    assert export_rows, "expected at least one accepted export row"
+    sample_row = export_rows[0]
+    # Mirrors the single-segment ``_build_export_rows`` shape so the
+    # ported thesis_01 writer can consume them unchanged.
+    assert set(sample_row.keys()) >= {
+        "sequence_index",
+        "tip_position_xyz_mm",
+        "requested_pair_command_cm",
+        "segment_a_pair_cm",
+        "segment_b_pair_cm",
+    }
+    assert len(sample_row["tip_position_xyz_mm"]) == 3
+    assert len(sample_row["segment_a_pair_cm"]) == 2
+    assert len(sample_row["segment_b_pair_cm"]) == 2
+
+
+def test_compute_variability_records_groups_repeated_samples_per_command() -> None:
+    # Two commands, each captured 4 times across 2 cycles.
+    samples: list = []
+    for cycle in range(2):
+        for step_index in (10, 11):
+            for rep in range(2):
+                samples.append(
+                    _make_sample(
+                        sample_index=rep,
+                        cycle_index=cycle,
+                        step_index=step_index,
+                        # Add a tiny spread per repeat so std_rms > 0.
+                        tip_xyz_mm=(
+                            10.0 + 0.1 * rep + step_index,
+                            -5.0 + 0.05 * rep,
+                            50.0 + 0.02 * rep,
+                        ),
+                        segment_a=[-0.1, -0.05, 0.1, 0.05],
+                        segment_b=[0.2, 0.15, -0.2, -0.15],
+                    )
+                )
+    records = _build_thesis_records(samples)
+    variability = _compute_variability_records(records)
+    # 2 cycles × 2 step indices = 4 unique commands, each with 2 repeats.
+    assert len(variability) == 4
+    for entry in variability:
+        assert entry["valid_sample_count"] == 2
+        assert entry["position_std_rms_mm"] is not None
+        assert entry["position_std_rms_mm"] > 0.0
+        assert entry["averaged_x_mm"] is not None
+
+
+def test_compute_variability_records_returns_empty_when_no_command_repeats() -> None:
+    # Every sample at a unique (cycle, step_index) — i.e. samples_per_pattern=1
+    # in the real experiment. The variability path should skip entirely so
+    # the writer can decide not to emit the tracker_variability_* figures.
+    samples = [
+        _make_sample(
+            sample_index=i,
+            cycle_index=0,
+            step_index=i,
+            tip_xyz_mm=(float(i), float(i), 50.0),
+        )
+        for i in range(8)
+    ]
+    records = _build_thesis_records(samples)
+    assert _compute_variability_records(records) == []
+
+
+def test_random_babble_unique_command_count_resolves_from_target_when_budget_zero() -> None:
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        TwoSegmentCollectPoseDatasetConfig,
+        _random_babble_unique_command_count,
+    )
+    # The historical bug: budget=0 collapsed unique-command count to 32 even
+    # when the operator asked for 50,000 samples (10 per pattern → 5,000
+    # unique). Confirm the new resolver does the right thing.
+    cfg = TwoSegmentCollectPoseDatasetConfig.from_dict(
+        {
+            "schedule_type": "random_babble",
+            "pattern_count_budget": 0,
+            "continue_until_valid_samples": True,
+            "target_valid_sample_count": 50000,
+            "samples_per_pattern": 10,
+        }
+    )
+    count = _random_babble_unique_command_count(cfg)
+    assert count >= 5000, f"expected at least 5000 unique commands, got {count}"
+    # 5 % headroom is added so an 80 %+ acceptance run finishes in one pass.
+    assert count <= 5300, f"expected ~5000 + small headroom, got {count}"
+
+
+def test_random_babble_unique_command_count_respects_explicit_budget() -> None:
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        TwoSegmentCollectPoseDatasetConfig,
+        _random_babble_unique_command_count,
+    )
+    cfg = TwoSegmentCollectPoseDatasetConfig.from_dict(
+        {
+            "schedule_type": "random_babble",
+            "pattern_count_budget": 1234,
+            "continue_until_valid_samples": True,
+            "target_valid_sample_count": 50000,
+            "samples_per_pattern": 10,
+        }
+    )
+    assert _random_babble_unique_command_count(cfg) == 1234
+
+
+def test_random_babble_unique_command_count_default_when_unset() -> None:
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        TwoSegmentCollectPoseDatasetConfig,
+        _random_babble_unique_command_count,
+    )
+    cfg = TwoSegmentCollectPoseDatasetConfig.from_dict(
+        {
+            "schedule_type": "random_babble",
+            "pattern_count_budget": 0,
+            "continue_until_valid_samples": False,
+            "target_valid_sample_count": 0,
+            "samples_per_pattern": 1,
+        }
+    )
+    # No budget, no target → fall back to the 5000 default (matches the
+    # single-segment ladder so a fresh operator gets sane coverage).
+    assert _random_babble_unique_command_count(cfg) == 5000
+
+
+def test_random_babble_schedule_generates_full_unique_command_set() -> None:
+    """Regression test for the 33-unique-command bug.
+
+    Pre-fix: a 50K-target / 10-per-pattern random_babble run silently
+    generated only 32 random commands and cycled through them ~150 times.
+    Post-fix: it should generate ~5000 distinct random commands so one
+    pass covers the requested sample count.
+    """
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        TwoSegmentCollectPoseDatasetConfig,
+        build_two_segment_command_schedule,
+    )
+    cfg = TwoSegmentCollectPoseDatasetConfig.from_dict(
+        {
+            "schedule_type": "random_babble",
+            "max_segment_displacement_cm": 0.75,
+            "pattern_count_budget": 0,
+            "continue_until_valid_samples": True,
+            "target_valid_sample_count": 50000,
+            "samples_per_pattern": 10,
+            "random_seed": 0,
+        }
+    )
+    steps = build_two_segment_command_schedule(cfg, context=None)
+    # +1 for the leading zero step; everything else is unique random.
+    random_steps = [s for s in steps if s.phase == "random_babble"]
+    assert len(random_steps) >= 5000, f"expected ≥5000 random commands, got {len(random_steps)}"
+    # And every command really is unique (regression: the old code looped
+    # through the same 32 commands many times).
+    cable_signatures = {
+        tuple(round(v, 6) for v in step.command.segment_a)
+        + tuple(round(v, 6) for v in step.command.segment_b)
+        for step in random_steps
+    }
+    assert len(cable_signatures) >= 4900, (
+        "random_babble produced duplicate commands — unique-count fix regressed"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +397,95 @@ def test_write_two_segment_thesis_figures_emits_full_set(tmp_path: Path) -> None
             {"reason": "telemetry_packet_error", "servo_id": 3, "sample_index": 5},
         ],
     )
-    assert set(paths.keys()) == {"thesis_01", "thesis_02", "thesis_03", "thesis_04", "thesis_05", "thesis_06"}
+    expected_thesis_keys = {"thesis_01", "thesis_02", "thesis_03", "thesis_04", "thesis_05", "thesis_06"}
+    assert expected_thesis_keys.issubset(set(paths.keys()))
     for filename in THESIS_FIGURE_NAMES:
         target = tmp_path / filename
         assert target.exists(), f"{filename} should be written"
         # PNGs from matplotlib are far larger than 1 KB; placeholder is ~70 bytes.
         assert target.stat().st_size > 4_000, f"{filename} looks like a placeholder, not a real plot"
+
+
+def test_write_two_segment_thesis_figures_emits_variability_set_when_commands_repeat(tmp_path: Path) -> None:
+    """When samples_per_pattern > 1 produces repeated samples per command,
+    the variability triplet (workspace_xy / std_histogram / std_vs_command_index)
+    should be emitted alongside the standard thesis_* set."""
+    samples: list = []
+    for step_index in range(6):
+        for rep in range(5):
+            samples.append(
+                _make_sample(
+                    sample_index=rep,
+                    cycle_index=0,
+                    step_index=step_index,
+                    # Small noise per repeat → spread > 0.
+                    tip_xyz_mm=(10.0 * step_index + 0.05 * rep, -5.0 * step_index, 50.0),
+                    segment_a=[-0.1 * step_index, -0.05 * step_index, 0.1 * step_index, 0.05 * step_index],
+                    segment_b=[0.2 * step_index, 0.15 * step_index, -0.2 * step_index, -0.15 * step_index],
+                )
+            )
+    metrics = {
+        "schedule_type": "random_babble",
+        "accepted_sample_count": len(samples),
+        "rejected_sample_count": 0,
+        "command_failure_count": 0,
+        "run_trust_mode": "thesis_trusted",
+        "valid_for_two_segment_model_training": True,
+        "valid_for_two_segment_ann_training": True,
+        "config_used": {
+            "max_tick_delta_from_startup": 600,
+            "current_warning_ma": 800,
+            "sustained_overcurrent_ma": 1200,
+        },
+    }
+    paths = write_two_segment_thesis_figures(
+        output_dir=tmp_path,
+        metrics=metrics,
+        samples=samples,
+    )
+    for key in ("tracker_variability_workspace_xy", "tracker_variability_std_histogram", "tracker_variability_std_vs_command_index"):
+        assert key in paths, f"variability figure {key} should be emitted when commands repeat"
+    for filename in VARIABILITY_FIGURE_NAMES:
+        target = tmp_path / filename
+        assert target.exists(), f"{filename} should be written"
+        assert target.stat().st_size > 4_000, f"{filename} looks like a placeholder, not a real plot"
+
+
+def test_write_two_segment_thesis_figures_skips_variability_when_no_command_repeats(tmp_path: Path) -> None:
+    # samples_per_pattern == 1 in the real experiment — each command captures once.
+    samples = [
+        _make_sample(
+            sample_index=i,
+            cycle_index=0,
+            step_index=i,
+            tip_xyz_mm=(float(i), float(i), 50.0),
+            segment_b=[0.1 * i, 0.05 * i, -0.1 * i, -0.05 * i],
+        )
+        for i in range(8)
+    ]
+    metrics = {
+        "schedule_type": "random_babble",
+        "accepted_sample_count": len(samples),
+        "rejected_sample_count": 0,
+        "command_failure_count": 0,
+        "run_trust_mode": "thesis_trusted",
+        "valid_for_two_segment_model_training": True,
+        "valid_for_two_segment_ann_training": True,
+        "config_used": {
+            "max_tick_delta_from_startup": 600,
+            "current_warning_ma": 800,
+            "sustained_overcurrent_ma": 1200,
+        },
+    }
+    paths = write_two_segment_thesis_figures(
+        output_dir=tmp_path,
+        metrics=metrics,
+        samples=samples,
+    )
+    for key in ("tracker_variability_workspace_xy", "tracker_variability_std_histogram", "tracker_variability_std_vs_command_index"):
+        assert key not in paths, f"variability figure {key} should NOT be emitted when commands don't repeat"
+    for filename in VARIABILITY_FIGURE_NAMES:
+        assert not (tmp_path / filename).exists(), f"{filename} should not exist on a single-sample-per-command run"
 
 
 def test_write_two_segment_thesis_figures_handles_missing_pose_gracefully(tmp_path: Path) -> None:

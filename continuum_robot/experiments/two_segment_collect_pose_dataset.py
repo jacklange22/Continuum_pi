@@ -80,13 +80,13 @@ class TwoSegmentCollectPoseDatasetConfig:
     max_tick_delta_from_startup: int = 320
     samples_per_pattern: int = 1
     capture_repeats: int = 1
-    # 2026-05-19 default: 2.0 s settle between commanded patterns. Tendons +
+    # 2026-05-25 default: 3.0 s settle between commanded patterns. Tendons +
     # constant-curvature mechanics have a few hundred ms of relaxation time
-    # after each new goal-position write; 2 s is conservatively above that
+    # after each new goal-position write; 3 s is conservatively above that
     # window and gives the tracker time to converge on a stable pose. Operator
     # can shorten in config when throughput matters (random_babble / large
     # workspace_coverage) but the default is the safe-bench-day value.
-    settle_time_s: float = 2.0
+    settle_time_s: float = 3.0
     # Top-segment tendon routing compensation. When True (default), every
     # actuator-level write adds the bottom-segment per-tendon command to the
     # top-segment per-tendon command before computing goal ticks. This is the
@@ -127,8 +127,8 @@ class TwoSegmentCollectPoseDatasetConfig:
     # tendon-displacement step size (in cm). Only the final target generates a
     # sample; intermediate ramp steps preserve final range while reducing peak
     # current draw / tendon shock. ``None`` disables ramping.
-    command_ramp_step_cm: float | None = None
-    command_ramp_settle_time_s: float = 0.05
+    command_ramp_step_cm: float | None = 0.05
+    command_ramp_settle_time_s: float = 0.10
     # Two-segment current/load policy (lock-in):
     #   - warning around 800 mA per servo (descriptive, not a stop)
     #   - hard stop around 1200 mA per servo ONLY if SUSTAINED
@@ -168,6 +168,12 @@ class TwoSegmentCollectPoseDatasetConfig:
             amp_cm = max(0.0, float(payload.get("max_segment_displacement_mm", 0.1))) / 10.0
         else:
             amp_cm = 0.25
+        if "command_ramp_step_cm" not in payload:
+            command_ramp_step_cm = 0.05
+        elif payload.get("command_ramp_step_cm") in (None, ""):
+            command_ramp_step_cm = None
+        else:
+            command_ramp_step_cm = max(0.0, float(payload.get("command_ramp_step_cm")))
         return cls(
             schedule_type=str(payload.get("schedule_type", "single_axis_micro") or "single_axis_micro").strip().lower(),
             dry_run=bool(payload.get("dry_run", True)),
@@ -175,7 +181,7 @@ class TwoSegmentCollectPoseDatasetConfig:
             max_tick_delta_from_startup=max(0, int(payload.get("max_tick_delta_from_startup", 320))),
             samples_per_pattern=max(1, int(payload.get("samples_per_pattern", payload.get("samples_per_command", 1)))),
             capture_repeats=max(1, int(payload.get("capture_repeats", 1))),
-            settle_time_s=max(0.0, float(payload.get("settle_time_s", 2.0))),
+            settle_time_s=max(0.0, float(payload.get("settle_time_s", 3.0))),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", True)),
             run_trust_mode=str(payload.get("run_trust_mode", "servo_only") or "servo_only").strip().lower(),
             capture_tracker_snapshot=bool(payload.get("capture_tracker_snapshot", True)),
@@ -201,11 +207,8 @@ class TwoSegmentCollectPoseDatasetConfig:
             pattern_count_budget=max(0, int(payload.get("pattern_count_budget", 0) or 0)),
             random_seed=int(payload.get("random_seed", 0) or 0),
             grid_points_per_axis=max(1, int(payload.get("grid_points_per_axis", 5) or 5)),
-            command_ramp_step_cm=(
-                None if payload.get("command_ramp_step_cm") in (None, "")
-                else max(0.0, float(payload.get("command_ramp_step_cm")))
-            ),
-            command_ramp_settle_time_s=max(0.0, float(payload.get("command_ramp_settle_time_s", 0.05))),
+            command_ramp_step_cm=command_ramp_step_cm,
+            command_ramp_settle_time_s=max(0.0, float(payload.get("command_ramp_settle_time_s", 0.10))),
             current_warning_ma=max(1, int(payload.get("current_warning_ma", payload.get("max_current_warning_ma", 800)) or 800)),
             sustained_overcurrent_ma=max(
                 1,
@@ -950,12 +953,22 @@ def build_two_segment_command_schedule(config: TwoSegmentCollectPoseDatasetConfi
     elif schedule_type == "structured_grid":
         patterns = _structured_grid_patterns(amp_cm, points=max(2, int(config.grid_points_per_axis)))
     elif schedule_type == "random_babble":
-        patterns = _random_babble_patterns(amp_cm, sample_count=max(8, int(config.pattern_count_budget or 32)), seed=int(config.random_seed))
+        patterns = _random_babble_patterns(
+            amp_cm,
+            sample_count=_random_babble_unique_command_count(config),
+            seed=int(config.random_seed),
+        )
     elif schedule_type == "mixed_training":
         # Mix structured single-axis with workspace coverage and a few random samples.
         mixed = list(patterns)
         mixed.extend(_workspace_coverage_patterns(amp_cm))
-        mixed.extend(_random_babble_patterns(amp_cm, sample_count=max(8, int(config.pattern_count_budget or 16)), seed=int(config.random_seed)))
+        mixed.extend(
+            _random_babble_patterns(
+                amp_cm,
+                sample_count=_random_babble_unique_command_count(config, default_when_unset=16),
+                seed=int(config.random_seed),
+            )
+        )
         patterns = mixed
 
     steps: list[TwoSegmentCommandStep] = [zero_step]
@@ -1027,6 +1040,47 @@ def _structured_grid_patterns(amp_cm: float, *, points: int) -> list[tuple[str, 
                 top[axis + 2] = -value
             patterns.append((f"{label_prefix}_{value:+.3f}", "structured_grid", bottom, top))
     return patterns
+
+
+def _random_babble_unique_command_count(
+    config: "TwoSegmentCollectPoseDatasetConfig",
+    *,
+    default_when_unset: int = 5000,
+) -> int:
+    """Resolve the number of UNIQUE random commands the schedule should generate.
+
+    The pre-2026-05-26 behaviour was ``max(8, pattern_count_budget or 32)``,
+    which silently capped random_babble at 32 unique commands even when the
+    operator asked for ``target_valid_sample_count=50000``. That made the
+    run cycle through the same 32 commands ~150 times — the clusters were
+    in the data, not the plot.
+
+    Resolution order (highest priority first):
+
+    1. ``pattern_count_budget`` > 0 → use it verbatim.
+    2. ``continue_until_valid_samples`` + ``target_valid_sample_count`` →
+       generate ``ceil(target / max(1, samples_per_pattern))`` unique
+       commands so a single pass through the schedule yields the requested
+       sample count. A small headroom margin is added so a sub-100 %
+       acceptance rate doesn't force a second pass through identical
+       commands.
+    3. Otherwise default to ``default_when_unset`` (5000 — matches the
+       single-segment ``workspace_coverage`` ladder).
+
+    The floor of 8 is preserved so trivially-small runs still get a few
+    distinct commands.
+    """
+    if int(config.pattern_count_budget or 0) > 0:
+        return max(8, int(config.pattern_count_budget))
+    if bool(config.continue_until_valid_samples) and int(config.target_valid_sample_count or 0) > 0:
+        per_pattern = max(1, int(config.samples_per_pattern or 1))
+        target = int(config.target_valid_sample_count)
+        # 5 % headroom (rounded up to >= 1) — generous enough that an 80 %+
+        # acceptance run finishes in one pass; cheap if 100 % acceptance.
+        unique = (target + per_pattern - 1) // per_pattern
+        headroom = max(1, unique // 20)
+        return max(8, unique + headroom)
+    return max(8, int(default_when_unset))
 
 
 def _random_babble_patterns(amp_cm: float, *, sample_count: int, seed: int) -> list[tuple[str, str, list[float], list[float]]]:
