@@ -33,6 +33,8 @@ from continuum_robot.demo.two_segment_motion_patterns import (
     PATTERN_SLOW_DRIFT,
     PATTERN_SWEEP_X,
     PATTERN_SWEEP_Y,
+    PATTERN_WAYPOINT_DRIFT,
+    WAYPOINT_DRIFT_NUM_WAYPOINTS,
     PHASE_HOLD_END,
     PHASE_HOLD_START,
     PHASE_PATTERN,
@@ -576,6 +578,151 @@ class TestCreepySquidAndSlowDriftPatterns:
             "cinematic_drift third-cycle position ≈ start: pattern is "
             "closing too early, video will look like a repeating loop"
         )
+
+    def test_waypoint_drift_is_registered(self) -> None:
+        assert PATTERN_WAYPOINT_DRIFT in SUPPORTED_PATTERNS
+
+    def test_waypoint_drift_respects_per_axis_amplitude_bound(self) -> None:
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_WAYPOINT_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+                seed=7,
+            )
+        )
+        for point in traj:
+            assert abs(point.bottom_x_cm) <= 0.50 + 1e-9
+            assert abs(point.bottom_y_cm) <= 0.50 + 1e-9
+            assert abs(point.top_x_cm) <= 0.50 + 1e-9
+            assert abs(point.top_y_cm) <= 0.50 + 1e-9
+
+    def test_waypoint_drift_starts_and_ends_at_neutral(self) -> None:
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_WAYPOINT_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+                seed=0,
+            )
+        )
+        assert trajectory_starts_and_ends_at_neutral(traj)
+
+    def test_waypoint_drift_reaches_far_waypoints(self) -> None:
+        # The whole point of waypoint_drift is far-apart targets. Confirm
+        # the trajectory actually visits multiple distinct regions of the
+        # workspace by checking the bounding box width on both axes.
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_WAYPOINT_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+                ramp_in_s=0.0,
+                ramp_out_s=0.0,
+                hold_at_start_s=0.0,
+                hold_at_end_s=0.0,
+                seed=7,
+            )
+        )
+        xs = [p.bottom_x_cm for p in traj]
+        ys = [p.bottom_y_cm for p in traj]
+        x_span = max(xs) - min(xs)
+        y_span = max(ys) - min(ys)
+        # 0.5 cm amplitude means total reachable x-span is up to 1.0 cm.
+        # The waypoint generator biases away from the origin so we expect
+        # the actual span to use at least 60 % of the available range.
+        assert x_span > 0.6, f"waypoint_drift x span = {x_span:.3f} cm; expected > 0.6 cm"
+        assert y_span > 0.6, f"waypoint_drift y span = {y_span:.3f} cm; expected > 0.6 cm"
+
+    def test_waypoint_drift_decelerates_near_each_waypoint(self) -> None:
+        # Smoothstep guarantees velocity → 0 at each waypoint. Verify that
+        # the per-tick step distribution has a clear "low velocity" tail
+        # corresponding to the waypoint approach/exit segments.
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_WAYPOINT_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+                ramp_in_s=0.0,
+                ramp_out_s=0.0,
+                hold_at_start_s=0.0,
+                hold_at_end_s=0.0,
+                seed=0,
+            )
+        )
+        steps = []
+        for prev, cur in zip(traj, traj[1:]):
+            steps.append(
+                math.hypot(
+                    cur.bottom_x_cm - prev.bottom_x_cm,
+                    cur.bottom_y_cm - prev.bottom_y_cm,
+                )
+            )
+        # At a waypoint, smoothstep has zero derivative → step ≈ 0.
+        # At the midpoint of a segment, derivative peaks → step is largest.
+        # Confirm: minimum step is < 25 % of the mean step (i.e. there
+        # are clear deceleration zones at waypoints).
+        mean_step = sum(steps) / len(steps)
+        min_step = min(steps)
+        assert min_step < 0.25 * mean_step, (
+            f"waypoint_drift never visibly decelerates: min step "
+            f"{min_step:.4f} cm vs mean step {mean_step:.4f} cm — "
+            "the smoothstep easing is broken"
+        )
+
+    def test_waypoint_drift_is_reproducible_for_same_seed(self) -> None:
+        common = dict(
+            pattern=PATTERN_WAYPOINT_DRIFT,
+            amplitude_cm=0.50,
+            cycle_duration_s=60.0,
+            cycles=1,
+            update_rate_hz=30.0,
+            seed=42,
+        )
+        a = generate_pattern_trajectory(_request(**common))
+        b = generate_pattern_trajectory(_request(**common))
+        assert len(a) == len(b)
+        for p_a, p_b in zip(a, b):
+            assert p_a.bottom_x_cm == pytest.approx(p_b.bottom_x_cm)
+            assert p_a.bottom_y_cm == pytest.approx(p_b.bottom_y_cm)
+
+    def test_waypoint_drift_changes_when_seed_changes(self) -> None:
+        common = dict(
+            pattern=PATTERN_WAYPOINT_DRIFT,
+            amplitude_cm=0.50,
+            cycle_duration_s=60.0,
+            cycles=1,
+            update_rate_hz=30.0,
+            ramp_in_s=0.0,
+            ramp_out_s=0.0,
+            hold_at_start_s=0.0,
+            hold_at_end_s=0.0,
+        )
+        a = generate_pattern_trajectory(_request(**common, seed=0))
+        b = generate_pattern_trajectory(_request(**common, seed=99))
+        mid = len(a) // 2
+        delta = math.hypot(
+            a[mid].bottom_x_cm - b[mid].bottom_x_cm,
+            a[mid].bottom_y_cm - b[mid].bottom_y_cm,
+        )
+        assert delta > 0.05, (
+            f"waypoint_drift midpoint identical across seeds: {delta:.4f} cm — "
+            "seed has no effect on waypoint placement"
+        )
+
+    def test_waypoint_drift_num_waypoints_constant_is_sensible(self) -> None:
+        # If a future commit accidentally drops the waypoint count to 1 or 0,
+        # the pattern degenerates into a straight line / point. Pin the
+        # invariant so that regresses loudly.
+        assert WAYPOINT_DRIFT_NUM_WAYPOINTS >= 4
 
     def test_creepy_squid_per_axis_velocity_is_smooth(self) -> None:
         # The motion should be visually smooth (the GUI streams at 5–10 Hz

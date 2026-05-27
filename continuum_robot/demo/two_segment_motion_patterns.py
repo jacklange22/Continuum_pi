@@ -60,6 +60,13 @@ PATTERN_SLOW_DRIFT = "slow_drift"
 # closes on itself over any reasonable demo length, so the path keeps
 # revealing new workspace coverage as the camera rolls.
 PATTERN_CINEMATIC_DRIFT = "cinematic_drift"
+# Waypoint drift: generate N random waypoints across the workspace and
+# smoothly ease between consecutive ones (smoothstep → zero velocity at
+# each waypoint, slow approach/exit). The result is a weird, organic path
+# that visibly slows near each waypoint, then resumes moving toward the
+# next. Pair with a slow profile_velocity setting on the servos for an
+# extra-smooth "lazy octopus" feel.
+PATTERN_WAYPOINT_DRIFT = "waypoint_drift"
 
 SUPPORTED_PATTERNS = (
     PATTERN_FIGURE8,
@@ -74,6 +81,7 @@ SUPPORTED_PATTERNS = (
     PATTERN_CREEPY_SQUID,
     PATTERN_SLOW_DRIFT,
     PATTERN_CINEMATIC_DRIFT,
+    PATTERN_WAYPOINT_DRIFT,
 )
 
 COUPLING_SAME = "same_direction"
@@ -209,6 +217,8 @@ def _pair_command_for_pattern(
         return _slow_drift_pair(theta=theta, amplitude=amplitude, seed=seed)
     if name == PATTERN_CINEMATIC_DRIFT:
         return _cinematic_drift_pair(theta=theta, amplitude=amplitude)
+    if name == PATTERN_WAYPOINT_DRIFT:
+        return _waypoint_drift_pair(theta=theta, amplitude=amplitude, seed=seed)
     # Unknown pattern: fall back to a safe figure-8 so we never silently
     # over-command. The controller validates the pattern name upstream so
     # this path is unreachable in practice.
@@ -328,6 +338,78 @@ _CINEMATIC_Y_COMPONENTS: tuple[tuple[float, float, float], ...] = (
     (1.618, 0.30, 1.100),   # golden ratio
     (2.718, 0.20, 2.400),   # e — slowest-varying high frequency
 )
+
+
+# Default number of waypoints for the waypoint_drift pattern. Eight is the
+# sweet spot: with a 60 s cycle that's 7.5 s per segment — long enough for
+# the operator to see the robot visibly slow as it approaches each waypoint,
+# short enough that the camera catches several distinct drifts per cycle.
+WAYPOINT_DRIFT_NUM_WAYPOINTS = 8
+
+
+def _waypoint_drift_pair(*, theta: float, amplitude: float, seed: int) -> tuple[float, float]:
+    """Smoothly ease between N random waypoints inside the workspace.
+
+    Generates a fixed waypoint sequence from the seed (deterministic), then
+    interpolates between consecutive waypoints using a smoothstep curve so
+    velocity goes to zero at every waypoint. Visually: the robot drifts
+    slowly toward each waypoint, almost stops, then drifts to the next —
+    producing a "lazy octopus" path that is very different from a Lissajous.
+
+    The sequence always starts and ends at neutral (0, 0) so the pattern
+    composes correctly with the surrounding ramp envelope. Per-axis output
+    is bounded to ``[-amplitude, +amplitude]`` because every waypoint is
+    drawn from that range and smoothstep interpolation preserves bounds.
+
+    ``theta`` is the pattern phase: one full cycle (theta = 2π) walks
+    through all waypoints in order. ``seed`` controls which set of random
+    waypoints gets used — same seed always replays the same path, so
+    operators can reproduce a "favorite" demo for slide videos.
+    """
+    rng = random.Random(int(seed) * 11 + 17)
+    waypoints: list[tuple[float, float]] = [(0.0, 0.0)]
+    for _ in range(int(WAYPOINT_DRIFT_NUM_WAYPOINTS)):
+        # Bias toward the workspace boundary so consecutive waypoints are
+        # genuinely "far apart" instead of clustering near the origin.
+        # We do this by sampling each axis uniformly and re-rolling any
+        # point whose radius falls below 50 % of the amplitude.
+        for _retry in range(6):
+            x = rng.uniform(-amplitude, amplitude)
+            y = rng.uniform(-amplitude, amplitude)
+            if math.hypot(x, y) >= 0.5 * amplitude:
+                break
+        waypoints.append((x, y))
+    waypoints.append((0.0, 0.0))
+
+    segment_count = len(waypoints) - 1
+    # theta ∈ [0, 2π] → pos ∈ [0, segment_count]. Wrap at 2π so cycles > 1
+    # replay the same sequence smoothly (no jump back to neutral at the
+    # cycle boundary; the trajectory's final waypoint IS neutral).
+    cycle_fraction = (float(theta) / (2.0 * math.pi)) % 1.0
+    pos = cycle_fraction * float(segment_count)
+    segment_index = int(pos)
+    local_t = pos - float(segment_index)
+    if segment_index >= segment_count:
+        segment_index = segment_count - 1
+        local_t = 1.0
+
+    eased = _smoothstep(local_t)
+    start_x, start_y = waypoints[segment_index]
+    end_x, end_y = waypoints[segment_index + 1]
+    x = start_x + eased * (end_x - start_x)
+    y = start_y + eased * (end_y - start_y)
+    return (float(x), float(y))
+
+
+def _smoothstep(t: float) -> float:
+    """Standard smoothstep easing: 3t² − 2t³ with zero velocity at t=0 and t=1.
+
+    Used by ``_waypoint_drift_pair`` so the robot decelerates as it
+    approaches each waypoint and accelerates away from it — the exact
+    "almost gets there before moving again" feel the operator asked for.
+    """
+    t = max(0.0, min(1.0, float(t)))
+    return float(t * t * (3.0 - 2.0 * t))
 
 
 def _cinematic_drift_pair(*, theta: float, amplitude: float) -> tuple[float, float]:

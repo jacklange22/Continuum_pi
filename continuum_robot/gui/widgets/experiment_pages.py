@@ -5811,6 +5811,39 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         self.return_to_neutral_check.toggled.connect(
             lambda value: self.controller.set_config_value("return_to_neutral_at_end", bool(value))
         )
+        # Profile velocity / acceleration controls. ``0`` means "leave bus
+        # default in place" — the demo skips the write entirely when
+        # both spins read 0. Otherwise the demo pushes these to all 8
+        # commanded servos at run start and restores them on finalize.
+        # XC330 units: velocity = 0.229 rpm/unit; accel ≈ 214.577 rpm²/unit.
+        self.profile_velocity_spin = QSpinBox()
+        self.profile_velocity_spin.setRange(0, 500)
+        self.profile_velocity_spin.setSingleStep(5)
+        self.profile_velocity_spin.setSpecialValueText("bus default")
+        self.profile_velocity_spin.setToolTip(
+            "Per-servo profile velocity pushed at run start (0 = leave bus "
+            "default). Lower → slower, smoother motion between goal positions. "
+            "Recommended for slide-video recordings: 30–80."
+        )
+        self.profile_velocity_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value(
+                "profile_velocity", None if int(value) == 0 else int(value)
+            )
+        )
+        self.profile_acceleration_spin = QSpinBox()
+        self.profile_acceleration_spin.setRange(0, 200)
+        self.profile_acceleration_spin.setSingleStep(2)
+        self.profile_acceleration_spin.setSpecialValueText("bus default")
+        self.profile_acceleration_spin.setToolTip(
+            "Per-servo profile acceleration pushed at run start (0 = leave bus "
+            "default). Lower → softer ramps in/out of each goal position. "
+            "Recommended for slide-video recordings: 10–30."
+        )
+        self.profile_acceleration_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value(
+                "profile_acceleration", None if int(value) == 0 else int(value)
+            )
+        )
         self.run_label_edit = QLineEdit()
         self.run_label_edit.setPlaceholderText("optional short label persisted into summary")
         self.run_label_edit.editingFinished.connect(
@@ -5821,6 +5854,8 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         safety_form.addRow("Max Step Ticks / Update", self.step_cap_spin)
         safety_form.addRow("Warning Current", self.current_warning_spin)
         safety_form.addRow("Sustained Overcurrent", self.sustained_current_spin)
+        safety_form.addRow("Profile Velocity", self.profile_velocity_spin)
+        safety_form.addRow("Profile Acceleration", self.profile_acceleration_spin)
         safety_form.addRow("Run Label", self.run_label_edit)
         safety_card.body_layout.addLayout(safety_form)
         safety_card.body_layout.addWidget(self.dry_run_check)
@@ -5870,6 +5905,14 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         self._set_spin(self.step_cap_spin, int(config.max_step_ticks_per_update))
         self._set_spin(self.current_warning_spin, int(config.current_warning_ma))
         self._set_spin(self.sustained_current_spin, int(config.sustained_overcurrent_ma))
+        self._set_spin(
+            self.profile_velocity_spin,
+            0 if config.profile_velocity is None else int(config.profile_velocity),
+        )
+        self._set_spin(
+            self.profile_acceleration_spin,
+            0 if config.profile_acceleration is None else int(config.profile_acceleration),
+        )
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
         self._set_checkbox(self.return_to_neutral_check, bool(config.return_to_neutral_at_end))
         self._set_line_text(self.run_label_edit, str(config.run_label or ""))

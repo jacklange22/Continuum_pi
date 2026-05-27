@@ -93,6 +93,26 @@ DEFAULT_HARD_MAX_TICK_DELTA_FROM_STARTUP = 600
 DEFAULT_MAX_STEP_TICKS_PER_UPDATE = 25
 
 
+def _optional_non_negative_int(payload: dict[str, Any], key: str) -> int | None:
+    """Parse an optional non-negative int from a config payload.
+
+    Returns None when the key is absent or the value is None / empty string
+    (so the bus default is preserved); otherwise coerces to a clamped
+    non-negative int. Used by the slow motion demo's profile_velocity /
+    profile_acceleration knobs.
+    """
+    if key not in payload:
+        return None
+    value = payload.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, coerced)
+
+
 @dataclass
 class TwoSegmentSlowMotionDemoConfig:
     """Operator-facing config for the slow motion demo."""
@@ -124,6 +144,21 @@ class TwoSegmentSlowMotionDemoConfig:
     sustained_overcurrent_sample_count: int = DEFAULT_SUSTAINED_OVERCURRENT_SAMPLES
     top_segment_tendon_routing_compensation: bool = True
     return_to_neutral_at_end: bool = True
+
+    # Motor speed envelope. Pushed to all 8 servos at the start of the run
+    # and restored on finalize. ``None`` leaves the bus-configured default
+    # in place (no profile write). Lower values → slower, smoother motion
+    # between successive goal positions — useful for slide-video recordings
+    # where you want the demo to look like a fluid drift rather than a
+    # series of sharp steps. XC330 units:
+    #   profile_velocity: 1 unit = 0.229 rpm; 0 = "as fast as possible".
+    #   profile_acceleration: 1 unit ≈ 214.577 rev/min²; 0 = step input.
+    # Reasonable starting points for the demo are ~30–80 for velocity and
+    # ~10–30 for acceleration. ``None`` skips the write entirely so an
+    # operator who only wants to use the existing bus defaults is not
+    # forced to think about these.
+    profile_velocity: int | None = None
+    profile_acceleration: int | None = None
 
     # Mode + provenance
     dry_run: bool = True  # default ON: demo is meant to be previewed first
@@ -186,6 +221,8 @@ class TwoSegmentSlowMotionDemoConfig:
             sustained_overcurrent_sample_count=max(1, int(payload.get("sustained_overcurrent_sample_count", DEFAULT_SUSTAINED_OVERCURRENT_SAMPLES))),
             top_segment_tendon_routing_compensation=bool(payload.get("top_segment_tendon_routing_compensation", True)),
             return_to_neutral_at_end=bool(payload.get("return_to_neutral_at_end", True)),
+            profile_velocity=_optional_non_negative_int(payload, "profile_velocity"),
+            profile_acceleration=_optional_non_negative_int(payload, "profile_acceleration"),
             dry_run=bool(payload.get("dry_run", True)),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", False)),
             tracker_overlay_enabled=bool(payload.get("tracker_overlay_enabled", False)),
@@ -528,6 +565,25 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
             )
             bus_owner_cm.__enter__()
 
+        # Push the demo's profile_velocity / profile_acceleration to every
+        # commanded servo if the operator asked for them. We record the
+        # previous values per-servo so they can be restored on finalize
+        # regardless of how the run exits (completion, safety halt,
+        # operator stop, exception). When the config leaves these at
+        # ``None`` the bus default is preserved — no writes happen.
+        previous_profile_by_servo: dict[int, dict[str, int]] = {}
+        if live_bus_lock and (
+            self.config.profile_velocity is not None
+            or self.config.profile_acceleration is not None
+        ):
+            self._push_profile_settings(
+                servo_service=servo_service,
+                commanded_ids=commanded_ids,
+                velocity=self.config.profile_velocity,
+                acceleration=self.config.profile_acceleration,
+                previous_by_servo=previous_profile_by_servo,
+            )
+
         previous_elapsed = 0.0
         try:
             for index, point in enumerate(self._trajectory):
@@ -669,6 +725,18 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
                 if self._safety_halted:
                     break
         finally:
+            # Restore the per-servo profile_velocity / profile_acceleration
+            # values we captured before the run so the slow motion demo
+            # does not silently leave the bus configured for "lazy drift"
+            # speed when the operator switches to the next experiment.
+            # We do this BEFORE releasing the bus lock so the restore
+            # writes go through the same exclusive ownership the rest of
+            # the run used.
+            if previous_profile_by_servo:
+                self._restore_profile_settings(
+                    servo_service=servo_service,
+                    previous_by_servo=previous_profile_by_servo,
+                )
             if bus_owner_cm is not None:
                 try:
                     bus_owner_cm.__exit__(None, None, None)
@@ -684,6 +752,88 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
         session.set_metric("max_current_observed_ma", self._max_current_observed_ma)
         session.set_metric("stop_reason", str(self._stop_reason))
         session.set_metric("safety_halted", bool(self._safety_halted))
+
+    def _push_profile_settings(
+        self,
+        *,
+        servo_service: Any,
+        commanded_ids: list[int],
+        velocity: int | None,
+        acceleration: int | None,
+        previous_by_servo: dict[int, dict[str, int]],
+    ) -> None:
+        """Push profile_velocity / profile_acceleration to every commanded servo.
+
+        Records the previous value per-servo into ``previous_by_servo`` so
+        ``_restore_profile_settings`` can put them back on finalize. Writes
+        skip silently when the bus does not expose the corresponding
+        write/read helpers (e.g. mock buses in tests).
+        """
+        bus = getattr(servo_service, "dxl_bus", None)
+        if bus is None:
+            return
+        read_vel = getattr(bus, "read_profile_velocity", None)
+        read_acc = getattr(bus, "read_profile_acceleration", None)
+        write_vel = getattr(bus, "write_profile_velocity", None)
+        write_acc = getattr(bus, "write_profile_acceleration", None)
+        for servo_id in commanded_ids:
+            sid = int(servo_id)
+            previous_entry: dict[str, int] = {}
+            try:
+                if velocity is not None and callable(read_vel) and callable(write_vel):
+                    previous_entry["velocity"] = int(read_vel(sid))
+                    write_vel(sid, int(velocity))
+                if acceleration is not None and callable(read_acc) and callable(write_acc):
+                    previous_entry["acceleration"] = int(read_acc(sid))
+                    write_acc(sid, int(acceleration))
+            except Exception as exc:  # noqa: BLE001 — log + continue
+                LOG.warning(
+                    "two_segment_slow_motion_demo: profile push failed for servo %s: %s",
+                    sid,
+                    exc,
+                )
+                # Roll back this servo if a partial push happened.
+                if "velocity" in previous_entry and callable(write_vel):
+                    try:
+                        write_vel(sid, int(previous_entry["velocity"]))
+                    except Exception:
+                        pass
+                if "acceleration" in previous_entry and callable(write_acc):
+                    try:
+                        write_acc(sid, int(previous_entry["acceleration"]))
+                    except Exception:
+                        pass
+                continue
+            if previous_entry:
+                previous_by_servo[sid] = previous_entry
+
+    def _restore_profile_settings(
+        self,
+        *,
+        servo_service: Any,
+        previous_by_servo: dict[int, dict[str, int]],
+    ) -> None:
+        """Restore the profile_velocity / profile_acceleration values captured
+        before the run. Best-effort: individual write failures are logged
+        but do not propagate, so a partial bus error during teardown does
+        not mask the experiment's primary result."""
+        bus = getattr(servo_service, "dxl_bus", None)
+        if bus is None:
+            return
+        write_vel = getattr(bus, "write_profile_velocity", None)
+        write_acc = getattr(bus, "write_profile_acceleration", None)
+        for sid, entry in previous_by_servo.items():
+            try:
+                if "velocity" in entry and callable(write_vel):
+                    write_vel(int(sid), int(entry["velocity"]))
+                if "acceleration" in entry and callable(write_acc):
+                    write_acc(int(sid), int(entry["acceleration"]))
+            except Exception as exc:  # noqa: BLE001 — log + continue
+                LOG.warning(
+                    "two_segment_slow_motion_demo: profile restore failed for servo %s: %s",
+                    sid,
+                    exc,
+                )
 
     def finalize(self, session: ExperimentSession) -> None:
         if self.config.dry_run or not self.config.return_to_neutral_at_end:

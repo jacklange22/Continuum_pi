@@ -83,6 +83,35 @@ class TestConfigParser:
         # cycle_duration is clamped to 1.0 (positive).
         assert config.cycle_duration_s == pytest.approx(1.0)
 
+    def test_profile_velocity_and_acceleration_default_to_none(self) -> None:
+        # Unspecified profile knobs leave the bus default in place.
+        config = TwoSegmentSlowMotionDemoConfig.from_dict({})
+        assert config.profile_velocity is None
+        assert config.profile_acceleration is None
+
+    def test_profile_velocity_and_acceleration_parse_positive_values(self) -> None:
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {"profile_velocity": 50, "profile_acceleration": 15}
+        )
+        assert config.profile_velocity == 50
+        assert config.profile_acceleration == 15
+
+    def test_profile_velocity_explicit_none_stays_none(self) -> None:
+        # Explicit None / empty string also means "use bus default".
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {"profile_velocity": None, "profile_acceleration": ""}
+        )
+        assert config.profile_velocity is None
+        assert config.profile_acceleration is None
+
+    def test_profile_velocity_negative_is_clamped_to_zero(self) -> None:
+        # A negative value would write nonsense to the bus; clamp to 0.
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {"profile_velocity": -10, "profile_acceleration": -5}
+        )
+        assert config.profile_velocity == 0
+        assert config.profile_acceleration == 0
+
 
 # ---------------------------------------------------------------------------
 # Bottom/top -> segment_a/segment_b mapping
@@ -331,6 +360,40 @@ class _BusOwnershipRecorder:
         return _Ctx()
 
 
+class _ProfileWriteRecorderBus:
+    """Bus stub that records profile_velocity / profile_acceleration writes."""
+
+    def __init__(self, *, initial_velocity: int = 100, initial_acceleration: int = 25) -> None:
+        self._velocity_by_servo: dict[int, int] = {sid: initial_velocity for sid in range(1, 9)}
+        self._acceleration_by_servo: dict[int, int] = {sid: initial_acceleration for sid in range(1, 9)}
+        self.write_velocity_calls: list[tuple[int, int]] = []
+        self.write_acceleration_calls: list[tuple[int, int]] = []
+        self.read_velocity_calls: list[int] = []
+        self.read_acceleration_calls: list[int] = []
+
+    def read_profile_velocity(self, servo_id: int) -> int:
+        self.read_velocity_calls.append(int(servo_id))
+        return int(self._velocity_by_servo.get(int(servo_id), 100))
+
+    def read_profile_acceleration(self, servo_id: int) -> int:
+        self.read_acceleration_calls.append(int(servo_id))
+        return int(self._acceleration_by_servo.get(int(servo_id), 25))
+
+    def write_profile_velocity(self, servo_id: int, value: int) -> None:
+        self.write_velocity_calls.append((int(servo_id), int(value)))
+        self._velocity_by_servo[int(servo_id)] = int(value)
+
+    def write_profile_acceleration(self, servo_id: int, value: int) -> None:
+        self.write_acceleration_calls.append((int(servo_id), int(value)))
+        self._acceleration_by_servo[int(servo_id)] = int(value)
+
+    def current_velocity_for(self, servo_id: int) -> int:
+        return int(self._velocity_by_servo[int(servo_id)])
+
+    def current_acceleration_for(self, servo_id: int) -> int:
+        return int(self._acceleration_by_servo[int(servo_id)])
+
+
 class _LiveServoServiceStub:
     """ServoService stub that records bus writes and tracks exclusive ownership."""
 
@@ -341,6 +404,10 @@ class _LiveServoServiceStub:
         self.bus_recorder = _BusOwnershipRecorder()
         self.write_calls: list[dict[int, int]] = []
         self.telemetry_calls = 0
+        self.dxl_bus = _ProfileWriteRecorderBus()
+        # Per-call telemetry current value the stub returns. Tests can
+        # set this high to trigger the demo's overcurrent halt path.
+        self.simulated_current_ma = 10
 
     def exclusive_bus_operation(self, **kwargs):
         return self.bus_recorder.exclusive_bus_operation(**kwargs)
@@ -364,6 +431,11 @@ class _LiveServoServiceStub:
                 present_position=2048,
                 present_current_ma=10,
                 present_current_raw_unit=10,
+                # The demo's overcurrent halt check reads ``current_ma``
+                # (via ``_telemetry_max_current_ma``); expose the same value
+                # under that name so tests that configure a tiny threshold
+                # actually trigger the halt path.
+                current_ma=self.simulated_current_ma,
             )
             for sid in servo_ids
         }
@@ -491,6 +563,200 @@ class TestLiveBusOwnership:
         # The exit happened cleanly (no exception propagated through __exit__).
         exit_event = next(event for event in events if event[0] == "exit")
         assert exit_event[1]["exc_type"] is None
+
+
+class TestProfileSpeedPushAndRestore:
+    """Coverage for ``profile_velocity`` / ``profile_acceleration`` knobs.
+
+    The demo pushes operator-chosen values to every commanded servo at
+    run start and restores the captured previous values on finalize,
+    regardless of how the run exits. Without this restore the bus would
+    stay configured for "lazy drift" speed between experiments.
+    """
+
+    @staticmethod
+    def _operating_context_namespace():
+        from types import SimpleNamespace
+        segments_metadata = {
+            "segment_a": {"key": "segment_a", "servo_ids": [1, 2, 3, 4]},
+            "segment_b": {"key": "segment_b", "servo_ids": [5, 6, 7, 8]},
+        }
+        op_context = SimpleNamespace(
+            operating_mode="dual_segment",
+            commanded_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+            expected_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+            bottom_segment_key="segment_a",
+            top_segment_key="segment_b",
+            bottom_servo_ids=[1, 2, 3, 4],
+            top_servo_ids=[5, 6, 7, 8],
+            physical_assembly_issues=[],
+            segment_order=["segment_a", "segment_b"],
+        )
+        op_context.metadata = lambda: {"segments": segments_metadata}
+        return op_context
+
+    def _make_live_session(self) -> tuple[_StubSession, _LiveServoServiceStub]:
+        from types import SimpleNamespace
+        session = _StubSession()
+        servo_service = _LiveServoServiceStub()
+        servo_service.mapper = _LiveMapperStub()
+        session.context.servo_service = servo_service
+        op_context = self._operating_context_namespace()
+        session.context.settings = SimpleNamespace(
+            robot=SimpleNamespace(operating_context=lambda: op_context)
+        )
+        return session, servo_service
+
+    def test_profile_settings_are_pushed_to_every_servo_at_run_start(self) -> None:
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {
+                "amplitude_cm": 0.10,
+                "cycle_duration_s": 1.0,
+                "cycles": 1,
+                "ramp_in_s": 0.1,
+                "ramp_out_s": 0.1,
+                "hold_at_start_s": 0.0,
+                "hold_at_end_s": 0.0,
+                "update_rate_hz": 5.0,
+                "profile_velocity": 50,
+                "profile_acceleration": 15,
+                "dry_run": False,
+            }
+        )
+        experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
+        from continuum_robot.experiments.two_segment_slow_motion_demo import (
+            generate_pattern_trajectory,
+        )
+        experiment._trajectory = generate_pattern_trajectory(config.pattern_request())
+        experiment._startup_ticks_by_servo = {sid: 2048 for sid in range(1, 9)}
+        experiment._startup_provenance = {"accepted_all_8_startup": True, "source": "test"}
+        session, servo_service = self._make_live_session()
+
+        experiment.execute(session)
+
+        # Velocity + acceleration written exactly ONCE per servo at the
+        # start (8 servos × 2 writes = 16 total push writes), plus the
+        # 8 restore writes for each at the end.
+        written_velocity_servos = {sid for sid, _ in servo_service.dxl_bus.write_velocity_calls}
+        written_acceleration_servos = {
+            sid for sid, _ in servo_service.dxl_bus.write_acceleration_calls
+        }
+        assert written_velocity_servos == set(range(1, 9))
+        assert written_acceleration_servos == set(range(1, 9))
+        # The first velocity write per servo is the demo's push value.
+        first_velocity_writes = {}
+        for sid, value in servo_service.dxl_bus.write_velocity_calls:
+            first_velocity_writes.setdefault(sid, value)
+        assert all(v == 50 for v in first_velocity_writes.values())
+
+    def test_profile_settings_are_restored_after_run(self) -> None:
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {
+                "amplitude_cm": 0.10,
+                "cycle_duration_s": 1.0,
+                "cycles": 1,
+                "ramp_in_s": 0.1,
+                "ramp_out_s": 0.1,
+                "hold_at_start_s": 0.0,
+                "hold_at_end_s": 0.0,
+                "update_rate_hz": 5.0,
+                "profile_velocity": 50,
+                "profile_acceleration": 15,
+                "dry_run": False,
+            }
+        )
+        experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
+        from continuum_robot.experiments.two_segment_slow_motion_demo import (
+            generate_pattern_trajectory,
+        )
+        experiment._trajectory = generate_pattern_trajectory(config.pattern_request())
+        experiment._startup_ticks_by_servo = {sid: 2048 for sid in range(1, 9)}
+        experiment._startup_provenance = {"accepted_all_8_startup": True, "source": "test"}
+        session, servo_service = self._make_live_session()
+        # Initial bus state: velocity=100, acceleration=25 (per stub default).
+
+        experiment.execute(session)
+
+        # After the run, every servo's velocity is back at the initial 100
+        # and acceleration is back at 25. The "lazy drift" demo speed must
+        # not bleed into the next experiment's run.
+        for sid in range(1, 9):
+            assert servo_service.dxl_bus.current_velocity_for(sid) == 100
+            assert servo_service.dxl_bus.current_acceleration_for(sid) == 25
+
+    def test_profile_settings_are_restored_even_on_safety_halt(self) -> None:
+        # Sustained overcurrent halts the run early — the restore must
+        # still fire so the bus does not stay configured for demo speed
+        # after an abort.
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {
+                "amplitude_cm": 0.10,
+                "cycle_duration_s": 1.0,
+                "cycles": 1,
+                "ramp_in_s": 0.1,
+                "ramp_out_s": 0.1,
+                "hold_at_start_s": 0.0,
+                "hold_at_end_s": 0.0,
+                "update_rate_hz": 5.0,
+                "profile_velocity": 50,
+                "profile_acceleration": 15,
+                "sustained_overcurrent_ma": 1,
+                "sustained_overcurrent_sample_count": 1,
+                "dry_run": False,
+            }
+        )
+        experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
+        from continuum_robot.experiments.two_segment_slow_motion_demo import (
+            generate_pattern_trajectory,
+        )
+        experiment._trajectory = generate_pattern_trajectory(config.pattern_request())
+        experiment._startup_ticks_by_servo = {sid: 2048 for sid in range(1, 9)}
+        experiment._startup_provenance = {"accepted_all_8_startup": True, "source": "test"}
+        session, servo_service = self._make_live_session()
+        # Force the telemetry stub to report a current well above the
+        # 1 mA halt threshold so the first telemetry read trips the halt.
+        servo_service.simulated_current_ma = 500
+
+        experiment.execute(session)
+
+        # Halt fired (safety_halted=True) but profile values are still
+        # restored to the initial bus state.
+        assert experiment._safety_halted is True
+        for sid in range(1, 9):
+            assert servo_service.dxl_bus.current_velocity_for(sid) == 100
+            assert servo_service.dxl_bus.current_acceleration_for(sid) == 25
+
+    def test_no_profile_writes_when_both_config_values_are_none(self) -> None:
+        # When the operator leaves both spins at "bus default" (0 → None),
+        # the demo must NOT touch profile_velocity / profile_acceleration
+        # at all. This keeps the demo idempotent for operators who only
+        # want to use the existing bus configuration.
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {
+                "amplitude_cm": 0.10,
+                "cycle_duration_s": 1.0,
+                "cycles": 1,
+                "ramp_in_s": 0.1,
+                "ramp_out_s": 0.1,
+                "hold_at_start_s": 0.0,
+                "hold_at_end_s": 0.0,
+                "update_rate_hz": 5.0,
+                "dry_run": False,
+            }
+        )
+        experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
+        from continuum_robot.experiments.two_segment_slow_motion_demo import (
+            generate_pattern_trajectory,
+        )
+        experiment._trajectory = generate_pattern_trajectory(config.pattern_request())
+        experiment._startup_ticks_by_servo = {sid: 2048 for sid in range(1, 9)}
+        experiment._startup_provenance = {"accepted_all_8_startup": True, "source": "test"}
+        session, servo_service = self._make_live_session()
+
+        experiment.execute(session)
+
+        assert servo_service.dxl_bus.write_velocity_calls == []
+        assert servo_service.dxl_bus.write_acceleration_calls == []
 
 
 class TestOutputBundle:
