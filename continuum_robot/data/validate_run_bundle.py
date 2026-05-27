@@ -161,6 +161,8 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_two_segment_workspace_repeatability(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "two_segment_penprobe_lookup_demo":
         _check_two_segment_penprobe_lookup_demo(issues, run_dir=run_dir, metrics=metrics)
+    if experiment_name == "two_segment_slow_motion_demo":
+        _check_two_segment_slow_motion_demo(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "registration_sampling_study":
         _check_registration_sampling_study(issues, run_dir=run_dir, metrics=metrics)
     _check_any_field(
@@ -534,6 +536,78 @@ def _check_two_segment_workspace_repeatability(
     ):
         if not (run_dir / filename).exists():
             issues.append(RunValidationIssue("INFO", f"{filename} is missing (thesis figure)."))
+
+
+def _check_two_segment_slow_motion_demo(
+    issues: list[RunValidationIssue],
+    *,
+    run_dir: Path,
+    metrics: dict[str, Any],
+) -> None:
+    """Validate a two-segment slow motion demo run folder.
+
+    Loudly demo-only. Validator FAILs on the validity flags (model_training
+    and thesis_repeatability must be False) and on missing required files;
+    WARNs on amplitude > 0.5 cm and on profile_restore failures so the
+    operator notices when the bus was left at demo speed.
+    """
+    if metrics.get("demo_only") is not True:
+        issues.append(RunValidationIssue("WARN", "two_segment_slow_motion_demo run must set demo_only=true."))
+    if metrics.get("closed_loop_control") is not False:
+        issues.append(
+            RunValidationIssue(
+                "WARN", "two_segment_slow_motion_demo run must set closed_loop_control=false."
+            )
+        )
+    if metrics.get("valid_for_model_training") is not False:
+        issues.append(
+            RunValidationIssue("FAIL", "two_segment_slow_motion_demo must not set valid_for_model_training=true.")
+        )
+    if metrics.get("valid_for_thesis_repeatability") is not False:
+        issues.append(
+            RunValidationIssue(
+                "FAIL", "two_segment_slow_motion_demo must not set valid_for_thesis_repeatability=true."
+            )
+        )
+    amplitude = metrics.get("amplitude_cm")
+    if isinstance(amplitude, (int, float)) and float(amplitude) > 0.5:
+        issues.append(
+            RunValidationIssue(
+                "WARN",
+                f"amplitude_cm={float(amplitude):.2f} exceeds the conservative 0.50 cm demo "
+                "recommendation; verify the spine handled it cleanly before re-running.",
+            )
+        )
+    # profile_restore_success is only meaningful when the demo actually
+    # pushed profile values. None = not applicable, True = clean, False =
+    # bus left at demo speed (requires operator action).
+    restore = metrics.get("profile_restore_success")
+    if restore is False:
+        reason = metrics.get("profile_restore_failure_reason") or "unspecified"
+        issues.append(
+            RunValidationIssue(
+                "WARN",
+                f"profile_restore_success=False ({reason}). Bus may still be "
+                "configured for demo speed; run a profile_restore / neutral "
+                "jog before any non-demo experiment.",
+            )
+        )
+    # When the relay pattern was used, validate its bundle files exist.
+    pattern = str(metrics.get("pattern") or "").strip().lower()
+    if pattern == "sci_fi_waypoint_relay":
+        required_relay_files = (
+            "waypoints.json",
+            "waypoint_schedule.csv",
+            "sci_fi_waypoint_relay_summary.txt",
+        )
+        for filename in required_relay_files:
+            if not (run_dir / filename).exists():
+                issues.append(
+                    RunValidationIssue(
+                        "FAIL",
+                        f"sci_fi_waypoint_relay run missing required output file: {filename}",
+                    )
+                )
 
 
 def _check_two_segment_penprobe_lookup_demo(

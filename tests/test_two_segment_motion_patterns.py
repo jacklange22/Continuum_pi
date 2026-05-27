@@ -30,6 +30,7 @@ from continuum_robot.demo.two_segment_motion_patterns import (
     PATTERN_LISSAJOUS,
     PATTERN_OVAL,
     PATTERN_RASTER,
+    PATTERN_SCI_FI_WAYPOINT_RELAY,
     PATTERN_SLOW_DRIFT,
     PATTERN_SWEEP_X,
     PATTERN_SWEEP_Y,
@@ -47,6 +48,13 @@ from continuum_robot.demo.two_segment_motion_patterns import (
     max_pair_amplitude,
     trajectory_starts_and_ends_at_neutral,
 )
+
+# The sci-fi relay pattern is registered for GUI discoverability but it can
+# only be built through ``build_relay_trajectory`` (it needs
+# ``waypoint_count`` / ``early_switch_fraction`` / ``waypoint_source`` which
+# do not fit on PatternRequest). Tests that loop ``SUPPORTED_PATTERNS``
+# through ``generate_pattern_trajectory`` must skip it.
+TRAJECTORY_PATTERNS = [p for p in SUPPORTED_PATTERNS if p != PATTERN_SCI_FI_WAYPOINT_RELAY]
 
 
 def _request(**overrides) -> PatternRequest:
@@ -93,7 +101,7 @@ class TestTendonConvention:
 class TestPatternBoundsAndFiniteness:
     """Every supported pattern must produce finite, bounded commands."""
 
-    @pytest.mark.parametrize("pattern", SUPPORTED_PATTERNS)
+    @pytest.mark.parametrize("pattern", TRAJECTORY_PATTERNS)
     def test_pattern_produces_finite_commands(self, pattern: str) -> None:
         points = generate_pattern_trajectory(_request(pattern=pattern, cycle_duration_s=4.0, cycles=1))
         assert len(points) > 0
@@ -103,7 +111,7 @@ class TestPatternBoundsAndFiniteness:
             for value in point.bottom_tendon_cm + point.top_tendon_cm + point.all_8_tendon_cm:
                 assert math.isfinite(value)
 
-    @pytest.mark.parametrize("pattern", SUPPORTED_PATTERNS)
+    @pytest.mark.parametrize("pattern", TRAJECTORY_PATTERNS)
     def test_amplitude_cap_respected(self, pattern: str) -> None:
         amplitude = 0.25
         # Clover hits exactly amplitude on its lobes; the figure-8 / lissajous
@@ -124,7 +132,7 @@ class TestRampEnvelope:
     """The ramp envelope must start and end at neutral."""
 
     def test_trajectory_starts_and_ends_at_neutral_for_every_pattern(self) -> None:
-        for pattern in SUPPORTED_PATTERNS:
+        for pattern in TRAJECTORY_PATTERNS:
             points = generate_pattern_trajectory(
                 _request(pattern=pattern, cycle_duration_s=4.0, cycles=1)
             )

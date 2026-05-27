@@ -160,6 +160,21 @@ class TwoSegmentSlowMotionDemoConfig:
     profile_velocity: int | None = None
     profile_acceleration: int | None = None
 
+    # Sci-fi waypoint relay knobs (only consumed when ``pattern`` is
+    # ``sci_fi_waypoint_relay``). All have sensible defaults that match
+    # the 20-second "Sci-Fi Spine" preset. The relay-specific fields do
+    # not affect any other pattern — operators using figure8, cinematic
+    # drift, etc. can ignore them entirely.
+    video_duration_s: float = 20.0
+    waypoint_count: int = 9
+    early_switch_fraction: float = 0.72
+    waypoint_source: str = "preset_weird"  # or "seeded_maximin"
+    relay_seed: int = 0
+    auto_select_seed: bool = True
+    min_waypoint_separation_norm: float = 0.40
+    max_waypoint_separation_norm: float = 2.20
+    command_rate_hz: float = 10.0  # bookkeeping, NOT bus write rate
+
     # Mode + provenance
     dry_run: bool = True  # default ON: demo is meant to be previewed first
     allow_servo_only_test_run: bool = False
@@ -223,6 +238,22 @@ class TwoSegmentSlowMotionDemoConfig:
             return_to_neutral_at_end=bool(payload.get("return_to_neutral_at_end", True)),
             profile_velocity=_optional_non_negative_int(payload, "profile_velocity"),
             profile_acceleration=_optional_non_negative_int(payload, "profile_acceleration"),
+            video_duration_s=max(1.0, float(payload.get("video_duration_s", 20.0))),
+            waypoint_count=max(2, int(payload.get("waypoint_count", 9))),
+            early_switch_fraction=max(
+                0.01,
+                min(1.0, float(payload.get("early_switch_fraction", 0.72))),
+            ),
+            waypoint_source=str(payload.get("waypoint_source", "preset_weird") or "preset_weird").strip().lower(),
+            relay_seed=int(payload.get("relay_seed", payload.get("seed", 0)) or 0),
+            auto_select_seed=bool(payload.get("auto_select_seed", True)),
+            min_waypoint_separation_norm=max(
+                0.0, float(payload.get("min_waypoint_separation_norm", 0.40)),
+            ),
+            max_waypoint_separation_norm=max(
+                0.0, float(payload.get("max_waypoint_separation_norm", 2.20)),
+            ),
+            command_rate_hz=max(0.5, float(payload.get("command_rate_hz", 10.0))),
             dry_run=bool(payload.get("dry_run", True)),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", False)),
             tracker_overlay_enabled=bool(payload.get("tracker_overlay_enabled", False)),
@@ -391,6 +422,17 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
         self._stop_reason: str = "not_started"
         self._max_current_observed_ma: int | None = None
         self._safety_halted = False
+        # Sci-fi relay state. Populated by setup() when pattern is
+        # ``sci_fi_waypoint_relay``; otherwise stays empty.
+        self._relay_waypoints: list[Any] = []
+        self._relay_schedule: list[Any] = []
+        self._resolved_relay_seed: int = 0
+        self._relay_advisory: Any = None
+        # Profile restore success. ``None`` until the demo touches profile
+        # settings; ``True`` if every restore write succeeded; ``False``
+        # with a reason string if any restore failed (e.g. bus drop).
+        self._profile_restore_success: bool | None = None
+        self._profile_restore_failure_reason: str | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "TwoSegmentSlowMotionDemoExperiment":
@@ -401,7 +443,43 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
     def setup(self, session: ExperimentSession) -> None:
         # Generate the trajectory up front so a hardware failure later in the
         # run still has the planned trajectory recorded in the bundle.
-        self._trajectory = generate_pattern_trajectory(self.config.pattern_request())
+        if str(self.config.pattern or "").strip().lower() == "sci_fi_waypoint_relay":
+            # Route through the dedicated relay builder so we get the
+            # waypoint list + schedule + advisory alongside the sparse
+            # trajectory points. The hold_at_start / hold_at_end values
+            # from the operator's config are honored.
+            from continuum_robot.demo.sci_fi_waypoint_relay import (
+                SciFiRelayConfig,
+                build_relay_trajectory,
+                speed_advisory,
+            )
+            relay_cfg = SciFiRelayConfig(
+                video_duration_s=float(self.config.video_duration_s),
+                waypoint_count=int(self.config.waypoint_count),
+                amplitude_cm=float(self.config.amplitude_cm),
+                early_switch_fraction=float(self.config.early_switch_fraction),
+                waypoint_source=str(self.config.waypoint_source),
+                seed=int(self.config.relay_seed),
+                auto_select_seed=bool(self.config.auto_select_seed),
+                min_waypoint_separation_norm=float(self.config.min_waypoint_separation_norm),
+                max_waypoint_separation_norm=float(self.config.max_waypoint_separation_norm),
+                profile_velocity=int(self.config.profile_velocity or 0),
+                profile_acceleration=int(self.config.profile_acceleration or 0),
+                command_rate_hz=float(self.config.command_rate_hz),
+            )
+            (
+                self._trajectory,
+                self._relay_waypoints,
+                self._relay_schedule,
+                self._resolved_relay_seed,
+            ) = build_relay_trajectory(
+                relay_cfg,
+                hold_at_start_s=float(self.config.hold_at_start_s),
+                hold_at_end_s=float(self.config.hold_at_end_s),
+            )
+            self._relay_advisory = speed_advisory(relay_cfg)
+        else:
+            self._trajectory = generate_pattern_trajectory(self.config.pattern_request())
         context = getattr(getattr(session.context, "settings", None), "robot", None)
         expected_ids = [1, 2, 3, 4, 5, 6, 7, 8]
         if context is not None and hasattr(context, "operating_context"):
@@ -814,14 +892,24 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
         previous_by_servo: dict[int, dict[str, int]],
     ) -> None:
         """Restore the profile_velocity / profile_acceleration values captured
-        before the run. Best-effort: individual write failures are logged
-        but do not propagate, so a partial bus error during teardown does
-        not mask the experiment's primary result."""
+        before the run. Records success / failure per servo onto
+        ``self._profile_restore_success`` and a human-readable failure
+        reason onto ``self._profile_restore_failure_reason`` so the summary
+        can surface it loudly. A LOUD warning at WARNING level fires when
+        any restore fails — silent failure here would leave the bus
+        configured at lazy-drift speed and silently break the next
+        experiment."""
         bus = getattr(servo_service, "dxl_bus", None)
         if bus is None:
+            # No bus to restore against. Surface as "n/a" rather than
+            # success so audit tools can distinguish bus-absence from a
+            # confirmed restore.
+            self._profile_restore_success = None
+            self._profile_restore_failure_reason = "no_dxl_bus_attribute"
             return
         write_vel = getattr(bus, "write_profile_velocity", None)
         write_acc = getattr(bus, "write_profile_acceleration", None)
+        failed_servos: list[tuple[int, str]] = []
         for sid, entry in previous_by_servo.items():
             try:
                 if "velocity" in entry and callable(write_vel):
@@ -834,6 +922,22 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
                     sid,
                     exc,
                 )
+                failed_servos.append((int(sid), str(exc)))
+        if failed_servos:
+            self._profile_restore_success = False
+            self._profile_restore_failure_reason = (
+                "; ".join(f"servo {sid}: {msg}" for sid, msg in failed_servos)
+            )
+            LOG.warning(
+                "two_segment_slow_motion_demo: profile restore INCOMPLETE on %d servos. "
+                "Bus may still be configured for demo speed. Operator action: "
+                "reconnect bus and run profile_restore / neutral jog before any "
+                "non-demo experiment.",
+                len(failed_servos),
+            )
+        else:
+            self._profile_restore_success = True
+            self._profile_restore_failure_reason = None
 
     def finalize(self, session: ExperimentSession) -> None:
         if self.config.dry_run or not self.config.return_to_neutral_at_end:
@@ -889,6 +993,29 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
         metrics["demo_only"] = True
         metrics["motion_pattern_demo"] = True
         metrics["closed_loop_control"] = False
+        # Profile restore status — surface loudly so audits / next-experiment
+        # gates can see whether the bus was left at demo speed.
+        metrics["profile_restore_success"] = self._profile_restore_success
+        metrics["profile_restore_failure_reason"] = self._profile_restore_failure_reason
+        # Sci-fi relay metadata. Only present for the relay pattern; for
+        # every other pattern these stay empty so existing consumers are
+        # unaffected.
+        if str(self.config.pattern or "").strip().lower() == "sci_fi_waypoint_relay":
+            metrics["video_duration_s"] = float(self.config.video_duration_s)
+            metrics["waypoint_count"] = int(self.config.waypoint_count)
+            metrics["early_switch_fraction"] = float(self.config.early_switch_fraction)
+            metrics["waypoint_source"] = str(self.config.waypoint_source)
+            metrics["relay_seed"] = int(self.config.relay_seed)
+            metrics["resolved_relay_seed"] = int(self._resolved_relay_seed)
+            metrics["auto_select_seed"] = bool(self.config.auto_select_seed)
+            metrics["profile_velocity"] = self.config.profile_velocity
+            metrics["profile_acceleration"] = self.config.profile_acceleration
+            metrics["command_rate_hz"] = float(self.config.command_rate_hz)
+            if self._relay_advisory is not None:
+                metrics["relay_speed_class"] = str(self._relay_advisory.speed_class)
+                metrics["seconds_per_waypoint"] = float(self._relay_advisory.seconds_per_waypoint)
+                metrics["estimated_bus_writes"] = int(self._relay_advisory.estimated_bus_writes)
+                metrics["relay_advisory_warnings"] = list(self._relay_advisory.warnings)
         return metrics
 
     def write_outputs(self, session: ExperimentSession, paths, summary) -> None:
@@ -897,6 +1024,28 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
         write_demo_trace_csv(output_dir / "demo_trace.csv", self._trace)
         write_demo_trace_jsonl(output_dir / "demo_trace.jsonl", self._trace)
         write_demo_summary(output_dir, summary=summary, config=self.config, trace=self._trace)
+        # Sci-fi-relay-specific outputs. Only emit when the relay pattern
+        # was the actual mode used so other patterns' bundles stay clean.
+        if str(self.config.pattern or "").strip().lower() == "sci_fi_waypoint_relay":
+            try:
+                from continuum_robot.demo.sci_fi_waypoint_relay_outputs import (
+                    write_sci_fi_relay_outputs,
+                )
+                write_sci_fi_relay_outputs(
+                    output_dir=output_dir,
+                    config=self.config,
+                    waypoints=self._relay_waypoints,
+                    schedule=self._relay_schedule,
+                    resolved_seed=int(self._resolved_relay_seed),
+                    advisory=self._relay_advisory,
+                    profile_restore_success=self._profile_restore_success,
+                    profile_restore_failure_reason=self._profile_restore_failure_reason,
+                    trace=self._trace,
+                )
+            except Exception as exc:  # noqa: BLE001 — never block bundle on figure failure
+                LOG.exception(
+                    "two_segment_slow_motion_demo: sci-fi relay outputs failed: %s", exc,
+                )
 
 
 # ---------------------------------------------------------------------------

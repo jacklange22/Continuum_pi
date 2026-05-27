@@ -67,6 +67,12 @@ PATTERN_CINEMATIC_DRIFT = "cinematic_drift"
 # next. Pair with a slow profile_velocity setting on the servos for an
 # extra-smooth "lazy octopus" feel.
 PATTERN_WAYPOINT_DRIFT = "waypoint_drift"
+# Sci-fi waypoint relay: discrete-goal relay (NOT interpolated every
+# frame). Sends each waypoint at a scheduled time, then commands the next
+# one before the spine fully settles — produces a creepy "almost reaching
+# / changing its mind" feel ideal for a 20-second slide video. Powered by
+# the standalone ``continuum_robot.demo.sci_fi_waypoint_relay`` module.
+PATTERN_SCI_FI_WAYPOINT_RELAY = "sci_fi_waypoint_relay"
 
 SUPPORTED_PATTERNS = (
     PATTERN_FIGURE8,
@@ -82,6 +88,7 @@ SUPPORTED_PATTERNS = (
     PATTERN_SLOW_DRIFT,
     PATTERN_CINEMATIC_DRIFT,
     PATTERN_WAYPOINT_DRIFT,
+    PATTERN_SCI_FI_WAYPOINT_RELAY,
 )
 
 COUPLING_SAME = "same_direction"
@@ -621,8 +628,34 @@ def generate_pattern_trajectory(
     is timestamped in real seconds so the controller can pace itself with
     ``time.sleep`` between successive points. The trajectory always starts
     and ends at neutral.
+
+    The ``sci_fi_waypoint_relay`` pattern is the exception: it produces a
+    *sparse* trajectory — one point per scheduled relay write — so the
+    demo controller sleeps the relay interval between bus writes instead
+    of streaming continuous samples. The relay timing comes from
+    ``cycle_duration_s`` (interpreted as ``video_duration_s``) and from
+    the request's ``seed`` / ``raster_ratio`` (interpreted as
+    ``waypoint_count`` for that one pattern; see
+    :func:`_generate_sci_fi_relay_trajectory`). Treating one PatternRequest
+    field as overloaded per-pattern keeps the existing function signature
+    intact instead of forcing every caller to know about relay-specific
+    fields.
     """
     validate_request(request)
+    if str(request.pattern or "").strip().lower() == PATTERN_SCI_FI_WAYPOINT_RELAY:
+        # The sci-fi relay needs config fields (waypoint_count,
+        # early_switch_fraction, waypoint_source, ...) that don't fit on
+        # PatternRequest. Callers must build the trajectory via
+        # ``continuum_robot.demo.sci_fi_waypoint_relay.build_relay_trajectory``
+        # using the demo experiment's SciFiRelayConfig instead.
+        raise ValueError(
+            f"{PATTERN_SCI_FI_WAYPOINT_RELAY!r} requires the dedicated "
+            "build_relay_trajectory helper in "
+            "continuum_robot.demo.sci_fi_waypoint_relay; PatternRequest "
+            "does not carry waypoint_count / early_switch_fraction / "
+            "waypoint_source. The slow motion demo experiment routes "
+            "this pattern through that helper automatically."
+        )
     envelope = PatternEnvelope(
         hold_start_s=float(request.hold_at_start_s),
         ramp_in_s=float(request.ramp_in_s),

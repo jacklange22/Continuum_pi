@@ -105,6 +105,16 @@ CORE_FILENAMES = {
     "subset_results.csv",
     "leave_one_out_results.csv",
     "samples_per_point_results.csv",
+    # two_segment_slow_motion_demo sci-fi waypoint relay artifacts
+    "sci_fi_waypoint_relay_summary.txt",
+    "waypoints.json",
+    "waypoint_schedule.csv",
+    "sci_fi_waypoint_preview.png",
+    "sci_fi_servo_goal_trace.png",
+    "demo_summary.json",
+    "two_segment_slow_motion_demo_summary.txt",
+    "demo_trace.csv",
+    "demo_trace.jsonl",
 }
 
 OPTIONAL_LARGE_FILENAMES = {

@@ -5862,15 +5862,71 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         safety_card.body_layout.addWidget(self.return_to_neutral_check)
         self.parameter_layout.addWidget(safety_card)
 
+        # 20-second Sci-Fi Spine preset button. Pre-fills every field for
+        # the recommended dry-run-first config. Operator confirms, then
+        # flips dry_run off when they're ready to actually record.
+        presets_card = ExperimentCard(
+            "Presets",
+            "One-click configs for common demo recordings. Always start in dry-run "
+            "to preview the trajectory; flip dry_run off only when you're ready.",
+        )
+        self.sci_fi_preset_button = QPushButton("20s Sci-Fi Spine")
+        self.sci_fi_preset_button.setProperty("variant", "primary")
+        self.sci_fi_preset_button.setToolTip(
+            "Apply the recommended 20-second sci-fi waypoint relay config: "
+            "9 weird waypoints across the workspace, 0.35 cm amplitude, slow "
+            "profile_velocity so the spine doesn't fully settle between commands."
+        )
+        self.sci_fi_preset_button.clicked.connect(self._apply_sci_fi_spine_preset)
+        presets_card.body_layout.addWidget(self.sci_fi_preset_button)
+        self.parameter_layout.addWidget(presets_card)
+
         preview_card = ExperimentCard(
             "Preview",
-            "Trajectory summary computed from the current pattern + amplitude.",
+            "Trajectory summary computed from the current pattern + amplitude. "
+            "For sci_fi_waypoint_relay, shows waypoint count, schedule, and "
+            "advisory warnings.",
         )
         self.preview_label = QLabel("preview pending")
         self.preview_label.setWordWrap(True)
         self.preview_label.setProperty("role", "muted")
         preview_card.body_layout.addWidget(self.preview_label)
         self.parameter_layout.addWidget(preview_card)
+
+    def _apply_sci_fi_spine_preset(self) -> None:
+        """One-click apply the recommended 20-second sci-fi spine config.
+
+        Every field is pushed through the controller's set_config_value
+        so the existing GUI sync machinery picks them up on the next
+        refresh. Dry-run defaults ON; the operator must flip it off to
+        actually drive hardware.
+        """
+        preset = {
+            "pattern": "sci_fi_waypoint_relay",
+            "video_duration_s": 20.0,
+            "waypoint_count": 9,
+            "amplitude_cm": 0.35,
+            "early_switch_fraction": 0.72,
+            "waypoint_source": "preset_weird",
+            "auto_select_seed": True,
+            "relay_seed": 0,
+            "profile_velocity": 45,
+            "profile_acceleration": 18,
+            "command_rate_hz": 10.0,
+            "return_to_neutral_at_end": True,
+            # Sensible ramp/hold values for a 20s recording.
+            "ramp_in_s": 1.0,
+            "ramp_out_s": 1.0,
+            "hold_at_start_s": 1.0,
+            "hold_at_end_s": 1.5,
+            # Default ON. Operator un-checks when ready to record.
+            "dry_run": True,
+        }
+        for key, value in preset.items():
+            self.controller.set_config_value(key, value)
+        # Refresh state immediately so the GUI reflects the new values
+        # without needing the next polling tick.
+        self.controller.refresh()
 
     def _on_amplitude_changed(self) -> None:
         value = self.amplitude_combo.currentData()
@@ -5920,6 +5976,9 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
 
     def _refresh_preview(self, *, config: TwoSegmentSlowMotionDemoConfig) -> None:
         try:
+            if str(config.pattern or "").strip().lower() == "sci_fi_waypoint_relay":
+                self._refresh_relay_preview(config=config)
+                return
             trajectory = slow_motion_generate_pattern_trajectory(config.pattern_request())
             sample_count = len(trajectory)
             observed_amplitude = slow_motion_max_pair_amplitude(trajectory)
@@ -5933,6 +5992,43 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             )
         except Exception as exc:  # bad config -- surface in the panel
             self.preview_label.setText(f"Preview unavailable: {exc}")
+
+    def _refresh_relay_preview(self, *, config: TwoSegmentSlowMotionDemoConfig) -> None:
+        """Sci-fi-relay-specific preview: waypoints, schedule, advisory warnings."""
+        from continuum_robot.demo.sci_fi_waypoint_relay import (
+            SciFiRelayConfig,
+            build_waypoints,
+            build_relay_schedule,
+            speed_advisory,
+        )
+        relay_cfg = SciFiRelayConfig(
+            video_duration_s=float(config.video_duration_s),
+            waypoint_count=int(config.waypoint_count),
+            amplitude_cm=float(config.amplitude_cm),
+            early_switch_fraction=float(config.early_switch_fraction),
+            waypoint_source=str(config.waypoint_source),
+            seed=int(config.relay_seed),
+            auto_select_seed=bool(config.auto_select_seed),
+            profile_velocity=int(config.profile_velocity or 0),
+            profile_acceleration=int(config.profile_acceleration or 0),
+            command_rate_hz=float(config.command_rate_hz),
+        )
+        waypoints, resolved_seed = build_waypoints(relay_cfg)
+        schedule = build_relay_schedule(relay_cfg, waypoints=waypoints)
+        advisory = speed_advisory(relay_cfg)
+        warning_text = ""
+        if advisory.warnings:
+            warning_text = "  WARN: " + "; ".join(advisory.warnings)
+        self.preview_label.setText(
+            f"Sci-Fi Waypoint Relay  •  {len(waypoints)} waypoints  •  "
+            f"{config.video_duration_s:.1f} s total  •  "
+            f"{advisory.seconds_per_waypoint:.2f} s/waypoint  •  "
+            f"{advisory.estimated_bus_writes} bus writes  •  "
+            f"source={config.waypoint_source} seed={resolved_seed}  •  "
+            f"speed_class={advisory.speed_class}  •  "
+            f"profile vel/accel = {config.profile_velocity}/{config.profile_acceleration}"
+            f"{warning_text}"
+        )
 
 
 class TwoSegmentWorkspaceRepeatabilityPage(ExperimentPageBase):
