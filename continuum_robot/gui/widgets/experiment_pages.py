@@ -5695,7 +5695,11 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             lambda value: self.controller.set_config_value("cycles", int(value))
         )
         self.update_rate_spin = QDoubleSpinBox()
-        self.update_rate_spin.setRange(0.5, 30.0)
+        # Cap at 50 Hz: a sync write to 8 XC330 servos at 1 Mbps takes ~5–10 ms
+        # of bus time, so 30–50 Hz is the realistic ceiling. The page allows
+        # picking the full range so the operator can max it out for slide
+        # videos with the cinematic_drift pattern.
+        self.update_rate_spin.setRange(0.5, 50.0)
         self.update_rate_spin.setDecimals(1)
         self.update_rate_spin.setSingleStep(0.5)
         self.update_rate_spin.setSuffix(" Hz")

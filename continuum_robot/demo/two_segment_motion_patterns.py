@@ -53,6 +53,13 @@ PATTERN_LISSAJOUS = "custom_lissajous"
 # bounded by ``amplitude`` so the soft tick cap still holds.
 PATTERN_CREEPY_SQUID = "creepy_squid"
 PATTERN_SLOW_DRIFT = "slow_drift"
+# Cinematic, slide-video-ready smooth exploration of the workspace. Designed
+# for the highest reliably-supported refresh rate (30 Hz) and a long cycle
+# (60+ s) so the recorded video shows continuous slow tracing rather than
+# repeated loops. Multi-frequency Lissajous with irrational ratios — never
+# closes on itself over any reasonable demo length, so the path keeps
+# revealing new workspace coverage as the camera rolls.
+PATTERN_CINEMATIC_DRIFT = "cinematic_drift"
 
 SUPPORTED_PATTERNS = (
     PATTERN_FIGURE8,
@@ -66,6 +73,7 @@ SUPPORTED_PATTERNS = (
     PATTERN_LISSAJOUS,
     PATTERN_CREEPY_SQUID,
     PATTERN_SLOW_DRIFT,
+    PATTERN_CINEMATIC_DRIFT,
 )
 
 COUPLING_SAME = "same_direction"
@@ -199,6 +207,8 @@ def _pair_command_for_pattern(
         return _creepy_squid_pair(theta=theta, amplitude=amplitude)
     if name == PATTERN_SLOW_DRIFT:
         return _slow_drift_pair(theta=theta, amplitude=amplitude, seed=seed)
+    if name == PATTERN_CINEMATIC_DRIFT:
+        return _cinematic_drift_pair(theta=theta, amplitude=amplitude)
     # Unknown pattern: fall back to a safe figure-8 so we never silently
     # over-command. The controller validates the pattern name upstream so
     # this path is unreachable in practice.
@@ -292,6 +302,57 @@ def _slow_drift_pair(*, theta: float, amplitude: float, seed: int) -> tuple[floa
     # Normalize so |x|, |y| <= 1 → output magnitudes <= amplitude.
     x /= weight_total
     y /= weight_total
+    return (amplitude * x, amplitude * y)
+
+
+# ----------------------------------------------------------------------------
+# Cinematic drift — designed for high-refresh-rate slide-video recordings.
+# ----------------------------------------------------------------------------
+
+
+# Per-axis Lissajous components for cinematic_drift. Each component is
+# (frequency_multiplier, amplitude_weight, phase_offset_radians). The
+# frequency multipliers are deliberately irrational ratios so the
+# trajectory NEVER closes on itself over any reasonable cycle length:
+# every slow loop reveals slightly different workspace territory, which
+# is exactly the visual effect we want for a slide video. Amplitude
+# weights sum to 1.0 in each axis so the per-axis output is bounded
+# strictly to ``[-amplitude, +amplitude]``.
+_CINEMATIC_X_COMPONENTS: tuple[tuple[float, float, float], ...] = (
+    (1.000, 0.50, 0.000),   # base fundamental — slow sweep across x
+    (1.732, 0.30, 0.700),   # √3 → braided overtone
+    (2.236, 0.20, 1.300),   # √5 → fine workspace exploration
+)
+_CINEMATIC_Y_COMPONENTS: tuple[tuple[float, float, float], ...] = (
+    (1.236, 0.50, 0.500),   # √(3/2) ≈ 1.225 — base sweep, off-fundamental
+    (1.618, 0.30, 1.100),   # golden ratio
+    (2.718, 0.20, 2.400),   # e — slowest-varying high frequency
+)
+
+
+def _cinematic_drift_pair(*, theta: float, amplitude: float) -> tuple[float, float]:
+    """High-refresh-rate, slide-video-ready smooth multi-frequency Lissajous.
+
+    Designed for max-update-rate playback (30 Hz cap) over a long cycle
+    (60–90 s) so a screen recording shows continuous, slowly-revealing
+    coverage rather than mechanical repetition. Frequencies in x and y
+    use irrational ratios (√3, √5, golden ratio, e), so the trajectory
+    is quasi-periodic and never closes within any reasonable demo length.
+
+    Per-axis amplitude is strictly bounded by ``amplitude`` — the
+    component weights sum to 1.0 in each axis and there is no envelope
+    multiplier, so what you set is what you get. The continuity is
+    smooth (sum of sinusoids has infinitely many continuous
+    derivatives), which is what makes the motion look fluid on camera.
+    """
+    x = sum(
+        weight * math.sin(freq * theta + phase)
+        for (freq, weight, phase) in _CINEMATIC_X_COMPONENTS
+    )
+    y = sum(
+        weight * math.sin(freq * theta + phase)
+        for (freq, weight, phase) in _CINEMATIC_Y_COMPONENTS
+    )
     return (amplitude * x, amplitude * y)
 
 

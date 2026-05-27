@@ -22,6 +22,7 @@ from continuum_robot.demo.two_segment_motion_patterns import (
     COUPLING_TOP_SCALED,
     DEFAULT_AMPLITUDE_CM,
     DEFAULT_CYCLE_DURATION_S,
+    PATTERN_CINEMATIC_DRIFT,
     PATTERN_CIRCLE,
     PATTERN_CLOVER,
     PATTERN_CREEPY_SQUID,
@@ -451,6 +452,130 @@ class TestCreepySquidAndSlowDriftPatterns:
         ]
         # Average per-sample distance should be meaningful — not the same shape.
         assert sum(diffs) / max(1, len(diffs)) > 0.05
+
+    def test_cinematic_drift_is_registered(self) -> None:
+        assert PATTERN_CINEMATIC_DRIFT in SUPPORTED_PATTERNS
+
+    def test_cinematic_drift_respects_per_axis_amplitude_bound(self) -> None:
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CINEMATIC_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+            )
+        )
+        for point in traj:
+            assert abs(point.bottom_x_cm) <= 0.50 + 1e-9
+            assert abs(point.bottom_y_cm) <= 0.50 + 1e-9
+            assert abs(point.top_x_cm) <= 0.50 + 1e-9
+            assert abs(point.top_y_cm) <= 0.50 + 1e-9
+
+    def test_cinematic_drift_starts_and_ends_at_neutral(self) -> None:
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CINEMATIC_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+            )
+        )
+        assert trajectory_starts_and_ends_at_neutral(traj)
+
+    def test_cinematic_drift_is_smooth_at_max_refresh_rate(self) -> None:
+        # The whole point of cinematic_drift is that it looks smooth on
+        # screen. At 30 Hz with the default 0.5 cm amplitude, the per-tick
+        # motion WITHIN the pattern body should be well under 1 mm/frame
+        # so the recorded video shows fluid sweeps instead of visible
+        # step changes. (The ramp-in / ramp-out boundary points are
+        # excluded — those gracefully connect neutral to the pattern body
+        # and the demo's normal ramps hide the boundary.)
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CINEMATIC_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+                ramp_in_s=3.0,
+                ramp_out_s=3.0,
+                hold_at_start_s=1.0,
+                hold_at_end_s=1.0,
+            )
+        )
+        max_step_cm = 0.0
+        previous = traj[0]
+        for cur in traj[1:]:
+            step = math.hypot(
+                cur.bottom_x_cm - previous.bottom_x_cm,
+                cur.bottom_y_cm - previous.bottom_y_cm,
+            )
+            if step > max_step_cm:
+                max_step_cm = step
+            previous = cur
+        # 0.5 cm * 2.718 (e, largest freq mult) * 2π/60 * (1/30) ≈ 0.047 cm
+        # at the peak of the high-frequency component. Cap at 0.10 cm
+        # (1 mm/frame) which is well below the visible-jerk threshold
+        # for a 30 Hz screen recording.
+        assert max_step_cm < 0.10, (
+            f"cinematic_drift stepped {max_step_cm*10:.3f} mm/frame at 30 Hz — "
+            "would look jerky on a slide video"
+        )
+
+    def test_cinematic_drift_covers_meaningful_workspace_area(self) -> None:
+        # The pattern should actually sweep across the workspace, not just
+        # wobble in one corner. Count the unique 5 mm² bins the trajectory
+        # visits over one cycle and require at least 20 distinct cells.
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CINEMATIC_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+                ramp_in_s=0.0,
+                ramp_out_s=0.0,
+                hold_at_start_s=0.0,
+                hold_at_end_s=0.0,
+            )
+        )
+        bins = {
+            (round(p.bottom_x_cm * 20), round(p.bottom_y_cm * 20))
+            for p in traj
+        }
+        assert len(bins) >= 20, (
+            f"cinematic_drift visited only {len(bins)} 5 mm² bins; "
+            "expected ≥20 — pattern is not actually exploring the workspace"
+        )
+
+    def test_cinematic_drift_does_not_repeat_within_a_single_cycle(self) -> None:
+        # Irrational-ratio Lissajous → quasi-periodic. The trajectory
+        # should NOT close on itself within one cycle. We compare the
+        # one-third-cycle midpoint to the start; if they were nearly equal,
+        # the curve would have closed early and the camera would see a
+        # visible loop.
+        traj = generate_pattern_trajectory(
+            _request(
+                pattern=PATTERN_CINEMATIC_DRIFT,
+                amplitude_cm=0.50,
+                cycle_duration_s=60.0,
+                cycles=1,
+                update_rate_hz=30.0,
+                ramp_in_s=0.0,
+                ramp_out_s=0.0,
+                hold_at_start_s=0.0,
+                hold_at_end_s=0.0,
+            )
+        )
+        first = traj[1]
+        third = traj[len(traj) // 3]
+        gap = math.hypot(third.bottom_x_cm - first.bottom_x_cm, third.bottom_y_cm - first.bottom_y_cm)
+        assert gap > 0.05, (
+            "cinematic_drift third-cycle position ≈ start: pattern is "
+            "closing too early, video will look like a repeating loop"
+        )
 
     def test_creepy_squid_per_axis_velocity_is_smooth(self) -> None:
         # The motion should be visually smooth (the GUI streams at 5–10 Hz
