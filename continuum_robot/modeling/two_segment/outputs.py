@@ -619,12 +619,36 @@ def _plot_orientation_error(path: Path, model_results: list[Any], *, quality: st
 def _plot_ann_loss(path: Path, history: list[dict[str, float]], *, quality: str) -> Path:
     fig, ax = create_figure(size="wide")
     if history:
-        ax.plot([row["epoch"] for row in history], [row["train_loss"] for row in history], label="train")
-        ax.plot([row["epoch"] for row in history], [row["validation_loss"] for row in history], label="validation")
+        epochs = [row["epoch"] for row in history]
+        train = [float(row["train_loss"]) for row in history]
+        val = [float(row["validation_loss"]) for row in history]
+        ax.plot(epochs, train, label="train", color=color("measured"))
+        ax.plot(epochs, val, label="validation", color=color("prediction"))
+        # Log-scale y when all losses are positive so convergence over orders
+        # of magnitude is legible; fall back to linear if any non-positive.
+        if all(v > 0.0 for v in train + val):
+            ax.set_yscale("log")
+        # Mark the early-stopping point (min validation loss) — this is the
+        # epoch whose weights were actually kept.
+        best_index = min(range(len(val)), key=lambda i: val[i])
+        best_epoch = epochs[best_index]
+        ax.axvline(best_epoch, color=color("threshold"), linestyle="--", linewidth=0.9)
+        ax.scatter([best_epoch], [val[best_index]], color=color("threshold"), zorder=5, s=28)
         legend(ax)
+        add_metric_box(
+            ax,
+            [
+                f"best epoch: {int(best_epoch)} (early-stop)",
+                f"best val loss: {val[best_index]:.4g}",
+                f"final train loss: {train[-1]:.4g}",
+                f"final val loss: {val[-1]:.4g}",
+                f"epochs run: {len(history)}",
+            ],
+            loc="upper right",
+        )
     else:
         ax.text(0.5, 0.5, "ANN not trained", ha="center", va="center", transform=ax.transAxes)
-    style_axes(ax, title="ANN Loss Curve", xlabel="Epoch", ylabel="Standardized MSE")
+    style_axes(ax, title="ANN Loss Curve (train vs validation, standardized MSE)", xlabel="Epoch", ylabel="Standardized MSE (log scale)")
     return save_figure(fig, path, quality=quality)
 
 
