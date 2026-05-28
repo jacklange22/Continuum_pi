@@ -1,0 +1,15 @@
+{
+  "artifact_dir": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260521_235440_legacy_ann_full_pose_model_sweep/ann_128_128",
+  "dataset_path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260521_165938_collect_pose_command_dataset",
+  "scope_used": "artifact_test_split",
+  "sample_count": 307,
+  "position_rmse_mm": 0.51267160803199,
+  "mean_position_error_mm": 0.4112698221597417,
+  "max_position_error_mm": 2.5348725208570086,
+  "axis_position_rmse_mm": [
+    0.3732045875804564,
+    0.31927369351350865,
+    0.14701980179979143
+  ],
+  "output_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260521_235440_legacy_ann_full_pose_model_sweep/ann_128_128/thesis_model_3d_prediction_error.png"
+}
