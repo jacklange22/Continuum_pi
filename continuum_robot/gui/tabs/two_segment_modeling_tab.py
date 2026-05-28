@@ -160,6 +160,23 @@ class TwoSegmentModelingTab(QWidget):
         label_row.addWidget(self.orientation_check)
         ann_card.body_layout.addLayout(label_row)
 
+        feature_row = QHBoxLayout()
+        feature_row.addWidget(QLabel("Model Input"))
+        self.feature_source_combo = QComboBox()
+        for label, value in [
+            ("8 servo positions → tip XYZ", "measured_servo_position_ticks"),
+            ("8 commanded tendon displacements → tip XYZ", "commanded_tendon_displacement_mm"),
+        ]:
+            self.feature_source_combo.addItem(label, value)
+        self.feature_source_combo.setToolTip(
+            "Model input X. 'servo positions' trains the forward map from the 8 measured "
+            "present servo position ticks to the distal tip XYZ. 'commanded tendon "
+            "displacements' uses the operator-intended command instead."
+        )
+        self.feature_source_combo.currentIndexChanged.connect(self._on_feature_source_changed)
+        feature_row.addWidget(self.feature_source_combo, 1)
+        ann_card.body_layout.addLayout(feature_row)
+
         config_row = QHBoxLayout()
         self.sweep_check = QCheckBox("ANN sweep")
         self.sweep_check.toggled.connect(
@@ -254,6 +271,7 @@ class TwoSegmentModelingTab(QWidget):
                 with QSignalBlocker(box):
                     box.setChecked(bool(value))
         self._set_combo(self.label_mode_combo, state.label_mode)
+        self._set_combo(self.feature_source_combo, getattr(state, "feature_source", "measured_servo_position_ticks"))
         self._set_combo(self.hidden_combo, state.ann_hidden_layers)
         if self.epochs_spin.value() != int(state.ann_epochs):
             with QSignalBlocker(self.epochs_spin):
@@ -279,6 +297,11 @@ class TwoSegmentModelingTab(QWidget):
         value = self.label_mode_combo.currentData()
         if value:
             self.controller.set_label_mode(str(value))
+
+    def _on_feature_source_changed(self, _index: int) -> None:
+        value = self.feature_source_combo.currentData()
+        if value:
+            self.controller.set_feature_source(str(value))
 
     def _on_hidden_changed(self, _index: int) -> None:
         value = self.hidden_combo.currentData()

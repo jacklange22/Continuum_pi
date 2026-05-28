@@ -55,6 +55,10 @@ class TwoSegmentModelingSample:
     distal_only: bool
     includes_intermediate_pose: bool
     pose_role_summary: dict[str, Any]
+    # Measured present servo position ticks (servo-ID order 1..8) when the
+    # sample carried complete measured feedback; None otherwise. This is the
+    # alternative feature source for "8 servo positions -> tip XYZ" models.
+    servo_position_ticks: np.ndarray | None = None
     source_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -199,8 +203,34 @@ def _accepted_sample(*, run_dir: Path, sample_index: int, sample: dict[str, Any]
             "pose_trust_by_role": _as_dict(extra.get("pose_trust_by_role")),
             "tracker_freshness_by_role": _as_dict(extra.get("tracker_freshness_by_role")),
         },
+        servo_position_ticks=extract_servo_position_ticks(sample),
         source_payload=_thin_payload(sample),
     )
+
+
+def extract_servo_position_ticks(sample: dict[str, Any]) -> np.ndarray | None:
+    """Return the 8 measured present servo position ticks in servo-ID order.
+
+    Reads ``extra.measured_servo_feedback[<id>].position_tick`` for servo IDs
+    1..8. Returns ``None`` if the feedback block is absent or any of the 8
+    positions is missing — the servo-position feature source requires a
+    complete 8-vector (a partial row cannot define the actuator state).
+    """
+    extra = _as_dict(sample.get("extra"))
+    feedback = _as_dict(extra.get("measured_servo_feedback"))
+    if not feedback:
+        return None
+    values: list[float] = []
+    for servo_id in SERVO_ID_ORDER:
+        entry = _as_dict(feedback.get(str(int(servo_id))))
+        tick = entry.get("position_tick")
+        if tick in (None, ""):
+            return None
+        try:
+            values.append(float(tick))
+        except (TypeError, ValueError):
+            return None
+    return np.asarray(values, dtype=float)
 
 
 def extract_feature_mm(sample: dict[str, Any]) -> tuple[np.ndarray, str]:

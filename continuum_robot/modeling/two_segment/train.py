@@ -39,6 +39,9 @@ class TwoSegmentModelingConfig:
     output_dir: str | None = None
     label_mode: str = "auto"
     include_orientation_if_available: bool = False
+    # Feature source: "commanded_tendon_displacement_mm" (default, legacy) or
+    # "measured_servo_position_ticks" (8 measured servo positions -> tip XYZ).
+    feature_source: str = "commanded_tendon_displacement_mm"
 
 
 @dataclass(frozen=True)
@@ -72,7 +75,21 @@ def run_two_segment_modeling(
         dataset,
         label_mode=str(config.label_mode),
         include_orientation_if_available=bool(config.include_orientation_if_available),
+        feature_source=str(config.feature_source),
     )
+    if len(bundle.samples) < 3:
+        dropped = int(bundle.feature_metadata.get("dropped_for_missing_servo_positions", 0))
+        detail = (
+            f" {dropped} accepted samples were dropped because they lacked a complete "
+            "8-servo measured-position vector (required by feature_source="
+            "measured_servo_position_ticks)."
+            if dropped
+            else ""
+        )
+        raise ValueError(
+            "Two-segment modeling needs at least 3 usable samples after feature extraction; "
+            f"got {len(bundle.samples)} (feature_source={config.feature_source}).{detail}"
+        )
     split = build_train_val_test_split(
         samples=bundle.samples,
         val_fraction=float(config.val_fraction),

@@ -25,6 +25,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-lower-trust", action="store_true", help="Allow lower-trust labeled samples and mark outputs lower-trust.")
     parser.add_argument("--models", nargs="+", help="Model keys to attempt: linear_baseline camarillo mike_constant_curvature ann.")
     parser.add_argument("--label-mode", choices=["auto", "distal_xyz", "distal_pose6", "two_coil_xyz", "two_coil_pose12"], help="Output label mode.")
+    parser.add_argument(
+        "--feature-source",
+        choices=["commanded_tendon_displacement_mm", "measured_servo_position_ticks"],
+        default=None,
+        help="Model input X: commanded tendon displacement (default) or measured 8 servo position ticks -> tip XYZ.",
+    )
     parser.add_argument("--include-orientation-if-available", action="store_true", help="In auto mode, use pose labels when all required tangent labels are present.")
     parser.add_argument("--test-fraction", type=float, help="Test split fraction.")
     parser.add_argument("--seed", type=int, help="Random seed for split/training.")
@@ -133,6 +139,11 @@ def _config_from_args(args: argparse.Namespace) -> TwoSegmentModelingConfig:
         figure_quality=str(args.figure_quality or dict(payload.get("output", {}) or {}).get("figure_quality", "production")),
         label_mode=str(args.label_mode or labeling.get("label_mode") or payload.get("output_target", "auto")).replace("distal_tip_xyz", "distal_xyz"),
         include_orientation_if_available=bool(args.include_orientation_if_available or labeling.get("include_orientation_if_available", payload.get("include_orientation_if_available", False))),
+        feature_source=str(
+            args.feature_source
+            or labeling.get("feature_source")
+            or payload.get("feature_source", "commanded_tendon_displacement_mm")
+        ),
     )
 
 

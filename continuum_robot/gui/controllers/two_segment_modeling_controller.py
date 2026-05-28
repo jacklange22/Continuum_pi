@@ -39,6 +39,10 @@ class TwoSegmentModelingViewState:
     strict_mode: bool = True
     allow_lower_trust: bool = False
     label_mode: str = "auto"
+    # Default the GUI flow to "8 measured servo positions -> tip XYZ", which is
+    # the forward-kinematics model the operator wants. The commanded-displacement
+    # source remains selectable for comparison.
+    feature_source: str = "measured_servo_position_ticks"
     include_orientation_if_available: bool = False
     ann_sweep_enabled: bool = False
     ann_hidden_layers: str = "128,128"
@@ -164,6 +168,10 @@ class TwoSegmentModelingController:
         with self._lock:
             self.state.label_mode = str(value or "auto")
 
+    def set_feature_source(self, value: str) -> None:
+        with self._lock:
+            self.state.feature_source = str(value or "measured_servo_position_ticks")
+
     def set_include_orientation_if_available(self, value: bool) -> None:
         with self._lock:
             self.state.include_orientation_if_available = bool(value)
@@ -193,6 +201,7 @@ class TwoSegmentModelingController:
             model_keys = self._enabled_model_keys()
             allow_lower_trust = bool(self.state.allow_lower_trust and not self.state.strict_mode)
             label_mode = str(self.state.label_mode)
+            feature_source = str(self.state.feature_source)
             include_orientation = bool(self.state.include_orientation_if_available)
             ann_sweep = bool(self.state.ann_sweep_enabled)
             ann_hidden_layers = str(self.state.ann_hidden_layers)
@@ -217,6 +226,7 @@ class TwoSegmentModelingController:
                 "model_keys": model_keys,
                 "allow_lower_trust": allow_lower_trust,
                 "label_mode": label_mode,
+                "feature_source": feature_source,
                 "include_orientation": include_orientation,
                 "ann_sweep": ann_sweep,
                 "ann_hidden_layers": ann_hidden_layers,
@@ -257,6 +267,7 @@ class TwoSegmentModelingController:
         model_keys: list[str],
         allow_lower_trust: bool,
         label_mode: str,
+        feature_source: str,
         include_orientation: bool,
         ann_sweep: bool,
         ann_hidden_layers: str,
@@ -272,6 +283,7 @@ class TwoSegmentModelingController:
                     allow_lower_trust=bool(allow_lower_trust),
                     model_keys=list(model_keys),
                     label_mode=str(label_mode),
+                    feature_source=str(feature_source),
                     include_orientation_if_available=bool(include_orientation),
                     test_fraction=float(test_fraction),
                     model_config={

@@ -20,7 +20,13 @@ FEATURE_NAMES = [
     "segment_b_servo_7_displacement_mm",
     "segment_b_servo_8_displacement_mm",
 ]
+SERVO_POSITION_FEATURE_NAMES = [f"servo_{i}_present_position_tick" for i in range(1, 9)]
 LABEL_MODES = {"auto", "distal_xyz", "distal_pose6", "two_coil_xyz", "two_coil_pose12"}
+
+# Feature source selects what fills the model input matrix X.
+FEATURE_SOURCE_COMMANDED = "commanded_tendon_displacement_mm"
+FEATURE_SOURCE_SERVO_POSITION = "measured_servo_position_ticks"
+SUPPORTED_FEATURE_SOURCES = (FEATURE_SOURCE_COMMANDED, FEATURE_SOURCE_SERVO_POSITION)
 
 
 class LabelBuildError(ValueError):
@@ -45,11 +51,43 @@ def build_feature_label_bundle(
     *,
     label_mode: str = "auto",
     include_orientation_if_available: bool = False,
+    feature_source: str = FEATURE_SOURCE_COMMANDED,
 ) -> FeatureLabelBundle:
-    """Build canonical model matrices from accepted dataset samples."""
+    """Build canonical model matrices from accepted dataset samples.
 
-    samples = list(dataset.samples)
-    X = np.stack([sample.feature_mm for sample in samples], axis=0) if samples else np.zeros((0, 8), dtype=float)
+    ``feature_source`` selects the model input X:
+    - ``commanded_tendon_displacement_mm`` (default): the 8-tendon commanded
+      displacement in mm (legacy behaviour, preserves all existing runs).
+    - ``measured_servo_position_ticks``: the 8 measured present servo
+      position ticks (servo-ID order 1..8). This is the "8 servo positions
+      -> tip XYZ" forward model. Samples that lack a complete measured
+      8-vector are dropped from the bundle (and reported in
+      ``feature_metadata.dropped_for_missing_servo_positions``).
+    """
+    feature_source = str(feature_source or FEATURE_SOURCE_COMMANDED)
+    if feature_source not in SUPPORTED_FEATURE_SOURCES:
+        raise LabelBuildError(
+            f"Unsupported feature_source {feature_source!r}; expected one of {SUPPORTED_FEATURE_SOURCES}."
+        )
+
+    all_samples = list(dataset.samples)
+    dropped_for_missing_servo_positions = 0
+    if feature_source == FEATURE_SOURCE_SERVO_POSITION:
+        samples = [s for s in all_samples if getattr(s, "servo_position_ticks", None) is not None]
+        dropped_for_missing_servo_positions = len(all_samples) - len(samples)
+        feature_names = list(SERVO_POSITION_FEATURE_NAMES)
+        feature_units = ["ticks"] * len(feature_names)
+        X = (
+            np.stack([np.asarray(s.servo_position_ticks, dtype=float) for s in samples], axis=0)
+            if samples
+            else np.zeros((0, 8), dtype=float)
+        )
+    else:
+        samples = all_samples
+        feature_names = list(FEATURE_NAMES)
+        feature_units = ["mm"] * len(feature_names)
+        X = np.stack([sample.feature_mm for sample in samples], axis=0) if samples else np.zeros((0, 8), dtype=float)
+
     resolved_mode = resolve_label_mode(
         samples,
         requested=label_mode,
@@ -58,17 +96,24 @@ def build_feature_label_bundle(
     y, y_position, y_tangent, label_metadata = _build_labels(samples, label_mode=resolved_mode)
     feature_metadata = {
         "schema_version": "two_segment_feature_metadata_v2",
-        "feature_names": list(FEATURE_NAMES),
-        "feature_units": ["mm"] * len(FEATURE_NAMES),
-        "input_units": "tendon_displacement_mm",
+        "feature_source": feature_source,
+        "feature_names": list(feature_names),
+        "feature_units": list(feature_units),
+        "input_units": ("servo_position_ticks" if feature_source == FEATURE_SOURCE_SERVO_POSITION else "tendon_displacement_mm"),
+        "model_input_description": (
+            "8 measured present servo position ticks (servo IDs 1..8) -> distal tip XYZ"
+            if feature_source == FEATURE_SOURCE_SERVO_POSITION
+            else "8 commanded tendon displacements (mm) -> distal tip XYZ"
+        ),
         "tendon_displacement_positive_direction": "shortening",
         "encoder_tick_direction_for_shortening": "decreasing_ticks",
         "sign_convention_note": "Positive tendon displacement means tendon shortening / more tension; shortening is expected to decrease encoder ticks.",
-        "canonical_feature_order": "Segment A command entries followed by Segment B command entries unless config metadata declares a different segment order.",
+        "canonical_feature_order": "Segment A entries followed by Segment B entries unless config metadata declares a different segment order.",
         "segment_order": _merged_segment_order(samples),
         "segment_grouping": _segment_grouping(samples),
-        "normalization_statistics": normalization_stats(X, names=FEATURE_NAMES),
+        "normalization_statistics": normalization_stats(X, names=feature_names),
         "sample_count": len(samples),
+        "dropped_for_missing_servo_positions": int(dropped_for_missing_servo_positions),
         "startup_artifacts": sorted({sample.startup_artifact_path for sample in samples if sample.startup_artifact_path}),
         "command_schema_versions": sorted({sample.command_schema_version for sample in samples if sample.command_schema_version}),
     }

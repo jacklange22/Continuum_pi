@@ -947,3 +947,59 @@ def test_dry_run_dataset_stays_blocked_even_under_lower_trust(tmp_path: Path) ->
     relaxed = load_two_segment_modeling_dataset([run_dir], allow_lower_trust=True)
     assert relaxed.accepted_count == 0
     assert any("dry_run_samples_not_trainable" in reason for reason in relaxed.rejection_counts())
+
+
+def test_servo_position_feature_source_builds_servo_position_features(tmp_path: Path) -> None:
+    """feature_source=measured_servo_position_ticks -> X is the 8 servo positions, y is tip XYZ."""
+    from continuum_robot.modeling.two_segment.features import build_feature_label_bundle
+
+    run_dir = _write_servo_only_run_with_real_poses(tmp_path)
+    dataset = load_two_segment_modeling_dataset([run_dir], allow_lower_trust=True)
+    assert dataset.accepted_count == 8
+
+    bundle = build_feature_label_bundle(
+        dataset, label_mode="distal_xyz", feature_source="measured_servo_position_ticks"
+    )
+    assert bundle.feature_metadata["feature_source"] == "measured_servo_position_ticks"
+    assert bundle.feature_metadata["feature_names"][0] == "servo_1_present_position_tick"
+    assert bundle.feature_metadata["input_units"] == "servo_position_ticks"
+    assert bundle.X.shape == (8, 8)  # 8 samples x 8 servo positions
+    assert bundle.y_position.shape == (8, 3)  # tip XYZ
+    # The servo-position features should match the measured present ticks
+    # (2048 + index + servo_id from the fixture builder).
+    assert bundle.X[0, 0] == 2048 + 0 + 1
+
+
+def test_commanded_feature_source_is_default_and_unchanged(tmp_path: Path) -> None:
+    """Default feature_source stays commanded tendon displacement (legacy behaviour)."""
+    from continuum_robot.modeling.two_segment.features import build_feature_label_bundle
+
+    run_dir = _write_servo_only_run_with_real_poses(tmp_path)
+    dataset = load_two_segment_modeling_dataset([run_dir], allow_lower_trust=True)
+    bundle = build_feature_label_bundle(dataset, label_mode="distal_xyz")
+    assert bundle.feature_metadata["feature_source"] == "commanded_tendon_displacement_mm"
+    assert bundle.feature_metadata["feature_names"][0] == "segment_a_servo_1_displacement_mm"
+    assert bundle.feature_metadata["input_units"] == "tendon_displacement_mm"
+
+
+def test_servo_position_feature_source_drops_samples_missing_positions(tmp_path: Path) -> None:
+    """Samples without a complete measured 8-vector are dropped under the servo-position source."""
+    from continuum_robot.modeling.two_segment.features import build_feature_label_bundle
+
+    run_dir = _write_servo_only_run_with_real_poses(tmp_path)
+    # Drop servo 5's position on the first sample.
+    samples_path = run_dir / "samples.jsonl"
+    lines = samples_path.read_text(encoding="utf-8").strip().split("\n")
+    corrupt = json.loads(lines[0])
+    corrupt["extra"]["measured_servo_feedback"]["5"]["position_tick"] = None
+    lines[0] = json.dumps(corrupt)
+    samples_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    dataset = load_two_segment_modeling_dataset([run_dir], allow_lower_trust=True)
+    # Loader still accepts the row (lower-trust relaxes the measured-position gate),
+    # but the servo-position feature bundle drops it for the incomplete vector.
+    bundle = build_feature_label_bundle(
+        dataset, label_mode="distal_xyz", feature_source="measured_servo_position_ticks"
+    )
+    assert bundle.feature_metadata["dropped_for_missing_servo_positions"] == 1
+    assert bundle.X.shape[0] == dataset.accepted_count - 1
