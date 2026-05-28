@@ -372,8 +372,18 @@ def _rejection_reason(sample: dict[str, Any], *, metrics: dict[str, Any], allow_
     startup = _as_dict(extra.get("startup_artifact_provenance") or metrics.get("startup_artifact_provenance"))
     if not allow_lower_trust and not bool(startup.get("accepted_all_8_startup")):
         return "accepted_all8_startup_missing"
-    if allow_lower_trust and str(extra.get("run_trust_mode") or "").lower() in {"servo_only", "dry_run"}:
-        return "servo_only_or_dry_run_samples_not_trainable"
+    # `dry_run` never commands real hardware, so it can never carry a real
+    # tracker pose -> keep it hard-blocked even under allow_lower_trust.
+    # `servo_only` DID move real hardware and may carry real distal poses:
+    # the operator flags a run servo_only for *trust* reasons, not because
+    # tracking was absent. Under an explicit allow_lower_trust opt-in, let
+    # servo_only fall through to the pose-presence + feature checks below;
+    # samples that genuinely lack a distal pose are still rejected as
+    # `distal_tip_robot_frame_pose_missing`. allow_lower_trust marks the
+    # whole modeling output lower-trust, so a complete servo_only dataset
+    # never silently produces thesis-valid results.
+    if allow_lower_trust and str(extra.get("run_trust_mode") or "").lower() == "dry_run":
+        return "dry_run_samples_not_trainable"
     try:
         extract_feature_mm(sample)
     except ValueError as exc:

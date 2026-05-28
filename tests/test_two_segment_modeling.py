@@ -824,3 +824,126 @@ def test_two_segment_modeling_cli_gates_succeed_with_realistic_thresholds(tmp_pa
     )
 
     assert status == 0
+
+
+def _write_servo_only_run_with_real_poses(tmp_path: Path) -> Path:
+    """A servo_only run that DOES carry real distal T_robot_tip poses.
+
+    Models the real bench case (run flagged servo_only for trust, but the
+    Aurora tracker WAS live and produced robot-frame distal poses). The old
+    fixtures tied servo_only to no-pose, so this case was never covered.
+    """
+    run_dir = (
+        tmp_path
+        / "data"
+        / "experiments"
+        / "two_segment_collect_pose_command_dataset"
+        / "20260526_235950_two_segment_collect_pose_command_dataset"
+    )
+    run_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "two_segment_collect_pose_command_dataset",
+                "run_id": run_dir.name,
+                "success": True,
+                "status": "success",
+                "experiment_metrics": {
+                    "run_trust_mode": "servo_only",
+                    "valid_for_two_segment_model_training": False,
+                    "startup_artifact_provenance": {"accepted_all_8_startup": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with (run_dir / "samples.jsonl").open("w", encoding="utf-8") as handle:
+        for index in range(8):
+            command_mm = [float((index + s) % 5) for s in range(8)]
+            matrix = [
+                [1.0, 0.0, 0.0, 10.0 + command_mm[0]],
+                [0.0, 1.0, 0.0, 20.0 + command_mm[1]],
+                [0.0, 0.0, 1.0, 30.0 + command_mm[4]],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+            sample = {
+                "wall_time_utc": f"2026-05-26T23:59:{index:02d}+00:00",
+                "phase": "synthetic_servo_only_with_poses",
+                "step_index": index,
+                "sample_index": index,
+                "two_segment_command": {
+                    "schema_version": "two_segment_command_v1",
+                    "units": "cm",
+                    "segments": {
+                        "segment_a": [v / 10.0 for v in command_mm[:4]],
+                        "segment_b": [v / 10.0 for v in command_mm[4:]],
+                    },
+                    "commanded_servo_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                    "flat_command_cm": [v / 10.0 for v in command_mm],
+                },
+                # Real robot-frame distal pose stored as a T_robot_tip matrix,
+                # exactly like the bench dataset.
+                "pose_in_robot_frame": {"roles": {"distal_tip": {"T_robot_tip": matrix}}},
+                "two_segment_pose": {"frame": "robot", "distal_tip_pose": {"T_robot_tip": matrix}},
+                "extra": {
+                    "record_kind": "two_segment_dataset_capture",
+                    "run_trust_mode": "servo_only",
+                    "capture_accepted": True,
+                    "command_success": True,
+                    "valid_for_two_segment_model_training": False,
+                    "command_units": "cm",
+                    "commanded_servo_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                    "ordered_8_displacements_cm": [v / 10.0 for v in command_mm],
+                    "startup_artifact_provenance": {"accepted_all_8_startup": True},
+                    "missing_required_pose_roles": [],
+                    "measured_servo_feedback": {
+                        str(servo_id): {
+                            "servo_id": int(servo_id),
+                            "position_tick": 2048 + index + int(servo_id),
+                            "load_proxy_ma": 50 + int(servo_id),
+                        }
+                        for servo_id in range(1, 9)
+                    },
+                },
+            }
+            handle.write(json.dumps(sample) + "\n")
+    return run_dir
+
+
+def test_servo_only_run_with_real_poses_is_strict_rejected_but_lower_trust_trainable(tmp_path: Path) -> None:
+    """Regression: a complete servo_only dataset (real poses) must be:
+
+    - rejected under strict (servo_only is not thesis-valid), and
+    - ACCEPTED under allow_lower_trust (the data is genuinely complete).
+
+    This is the exact bench scenario that previously rejected 100% of
+    samples even with allow_lower_trust via the old servo_only hard-block.
+    """
+    run_dir = _write_servo_only_run_with_real_poses(tmp_path)
+
+    strict = load_two_segment_modeling_dataset([run_dir])
+    assert strict.accepted_count == 0
+    assert any(
+        "sample_not_two_segment_model_training_valid" in reason for reason in strict.rejection_counts()
+    )
+
+    relaxed = load_two_segment_modeling_dataset([run_dir], allow_lower_trust=True)
+    assert relaxed.accepted_count == 8, relaxed.rejection_counts()
+
+
+def test_dry_run_dataset_stays_blocked_even_under_lower_trust(tmp_path: Path) -> None:
+    """dry_run has no real hardware, so it must stay blocked under allow_lower_trust."""
+    run_dir = _write_servo_only_run_with_real_poses(tmp_path)
+    # Flip the trust mode to dry_run on every sample + summary.
+    samples_path = run_dir / "samples.jsonl"
+    lines = samples_path.read_text(encoding="utf-8").strip().split("\n")
+    rewritten = []
+    for line in lines:
+        row = json.loads(line)
+        row["extra"]["run_trust_mode"] = "dry_run"
+        rewritten.append(json.dumps(row))
+    samples_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+    relaxed = load_two_segment_modeling_dataset([run_dir], allow_lower_trust=True)
+    assert relaxed.accepted_count == 0
+    assert any("dry_run_samples_not_trainable" in reason for reason in relaxed.rejection_counts())
