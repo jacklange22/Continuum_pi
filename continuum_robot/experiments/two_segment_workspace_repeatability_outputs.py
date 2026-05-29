@@ -654,6 +654,8 @@ def _write_summary_text(path: Path, *, metrics: Mapping[str, Any], summary: Mapp
         f"  rejected_captures:             {metrics.get('rejected_captures', 0)}",
         f"  stop_reason:                   {metrics.get('stop_reason', '')}",
         f"  target_generator_mode:         {metrics.get('target_generator_mode', '')}",
+        f"  grid_points_per_axis:          {metrics.get('grid_points_per_axis', '')}"
+        + (" (full_factorial_grid: targets = N^4)" if metrics.get('target_generator_mode') == 'full_factorial_grid' else " (grid mode only)"),
         f"  random_seed:                   {metrics.get('random_seed', 0)}",
         f"  max_segment_displacement_cm:   {metrics.get('max_segment_displacement_cm', 0)}",
         f"  return_to_neutral_between:     {metrics.get('return_to_neutral_between_visits', True)}",

@@ -170,6 +170,115 @@ def test_rings_and_axes_generator_is_supported() -> None:
 
 
 # ---------------------------------------------------------------------------
+# full_factorial_grid generator
+# ---------------------------------------------------------------------------
+
+
+def test_full_factorial_grid_derives_target_count_from_points_per_axis() -> None:
+    """In grid mode the target count is N^4 — derived from grid_points_per_axis,
+    NOT the manual target_count field. 3 per axis -> 81 targets."""
+    config = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(
+        {
+            "target_generator_mode": "full_factorial_grid",
+            "grid_points_per_axis": 3,
+            # A bogus manual target_count must be ignored in grid mode.
+            "target_count": 999,
+            "max_segment_displacement_cm": 0.25,
+        }
+    )
+    assert config.grid_points_per_axis == 3
+    assert config.target_count == 81  # 3 ** 4
+    targets = build_two_segment_workspace_targets(config)
+    assert len(targets) == 81
+
+
+def test_full_factorial_grid_is_equally_spaced_and_includes_corners_and_center() -> None:
+    """The grid must use np.linspace endpoints (corners included) with equal
+    spacing per axis. With 3 levels the per-axis values are [-amp, 0, +amp]."""
+    amp = 0.25
+    config = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(
+        {
+            "target_generator_mode": "full_factorial_grid",
+            "grid_points_per_axis": 3,
+            "max_segment_displacement_cm": amp,
+        }
+    )
+    targets = build_two_segment_workspace_targets(config)
+    # Each axis has exactly 3 distinct, equally-spaced levels.
+    for axis in ("bottom_x_cm", "bottom_y_cm", "top_x_cm", "top_y_cm"):
+        levels = sorted({round(getattr(t, axis), 9) for t in targets})
+        assert levels == [-amp, 0.0, amp], f"{axis} levels were {levels}"
+    # The all-low corner, all-high corner, and the exact center are present.
+    def _has(bx, by, tx, ty) -> bool:
+        return any(
+            abs(t.bottom_x_cm - bx) < 1e-9
+            and abs(t.bottom_y_cm - by) < 1e-9
+            and abs(t.top_x_cm - tx) < 1e-9
+            and abs(t.top_y_cm - ty) < 1e-9
+            for t in targets
+        )
+    assert _has(-amp, -amp, -amp, -amp)
+    assert _has(amp, amp, amp, amp)
+    assert _has(0.0, 0.0, 0.0, 0.0)
+
+
+def test_full_factorial_grid_is_deterministic_without_seed() -> None:
+    """The lattice is fully specified by points_per_axis + amplitude; two
+    builds (even with different seeds) produce identical targets."""
+    config_a = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(
+        {"target_generator_mode": "full_factorial_grid", "grid_points_per_axis": 4, "random_seed": 0}
+    )
+    config_b = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(
+        {"target_generator_mode": "full_factorial_grid", "grid_points_per_axis": 4, "random_seed": 999}
+    )
+    a = [(t.bottom_x_cm, t.bottom_y_cm, t.top_x_cm, t.top_y_cm) for t in build_two_segment_workspace_targets(config_a)]
+    b = [(t.bottom_x_cm, t.bottom_y_cm, t.top_x_cm, t.top_y_cm) for t in build_two_segment_workspace_targets(config_b)]
+    assert a == b
+    assert len(a) == 256  # 4 ** 4
+
+
+def test_full_factorial_grid_points_per_axis_is_clamped() -> None:
+    """grid_points_per_axis is clamped to [2, 10] so a stray value can't
+    request a runaway pose count (or a degenerate single point)."""
+    too_big = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(
+        {"target_generator_mode": "full_factorial_grid", "grid_points_per_axis": 99}
+    )
+    assert too_big.grid_points_per_axis == 10
+    assert too_big.target_count == 10000  # 10 ** 4
+
+    too_small = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(
+        {"target_generator_mode": "full_factorial_grid", "grid_points_per_axis": 1}
+    )
+    assert too_small.grid_points_per_axis == 2
+    assert too_small.target_count == 16  # 2 ** 4
+
+
+def test_full_factorial_grid_in_supported_modes() -> None:
+    from continuum_robot.experiments.two_segment_workspace_repeatability import (
+        SUPPORTED_TARGET_GENERATOR_MODES,
+    )
+
+    assert "full_factorial_grid" in SUPPORTED_TARGET_GENERATOR_MODES
+
+
+def test_grid_points_per_axis_ignored_in_non_grid_modes() -> None:
+    """Setting grid_points_per_axis must not affect target_count when the mode
+    is LHS — the manual target_count is authoritative there."""
+    config = TwoSegmentWorkspaceRepeatabilityConfig.from_dict(
+        {
+            "target_generator_mode": "workspace_latin_hypercube",
+            "grid_points_per_axis": 5,
+            "target_count": 120,
+        }
+    )
+    # grid_points_per_axis is still parsed/stored, but target_count stays
+    # whatever the operator set.
+    assert config.grid_points_per_axis == 5
+    assert config.target_count == 120
+    assert len(build_two_segment_workspace_targets(config)) == 120
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: execution protocol (dry run)
 # ---------------------------------------------------------------------------
 
