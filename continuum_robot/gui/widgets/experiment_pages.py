@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -5656,14 +5657,38 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
 
     refresh_policy = "manual"
     page_hint = (
-        "One-click weird sci-fi spine demo. Pick a preset, preview it in dry-run, "
-        "then un-check dry-run to record. No parameters to tune. Open-loop and "
-        "demo-only: NOT data collection; NOT closed-loop; NOT thesis-grade."
+        "One-click weird sci-fi spine demo. Pick a preset, set the speed, preview in "
+        "dry-run, then un-check dry-run to record. Open-loop and demo-only: NOT data "
+        "collection; NOT closed-loop; NOT thesis-grade."
     )
+
+    # Speed slider maps (inversely) to the relay's video_duration_s: dragging
+    # right (higher slider value) = shorter duration = faster motion. Bounds
+    # chosen so the slow end is a slow cinematic drift and the fast end is a
+    # brisk-but-still-smooth sweep.
+    SPEED_MIN_DURATION_S = 6.0   # slider = 100 (fastest)
+    SPEED_MAX_DURATION_S = 45.0  # slider = 1   (slowest)
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Run Weird Sci-Fi Demo")
+
+    def _speed_slider_to_duration_s(self, value: int) -> float:
+        span = self.SPEED_MAX_DURATION_S - self.SPEED_MIN_DURATION_S
+        frac = (int(value) - 1) / 99.0  # 0.0 at slider=1, 1.0 at slider=100
+        return round(self.SPEED_MAX_DURATION_S - frac * span, 1)
+
+    def _duration_s_to_speed_slider(self, duration_s: float) -> int:
+        span = self.SPEED_MAX_DURATION_S - self.SPEED_MIN_DURATION_S
+        clamped = max(self.SPEED_MIN_DURATION_S, min(self.SPEED_MAX_DURATION_S, float(duration_s)))
+        frac = (self.SPEED_MAX_DURATION_S - clamped) / span if span > 0 else 0.0
+        return int(round(1 + frac * 99))
+
+    def _on_speed_changed(self, value: int) -> None:
+        duration_s = self._speed_slider_to_duration_s(int(value))
+        self.controller.set_config_value("video_duration_s", float(duration_s))
+        if hasattr(self, "speed_value_label"):
+            self.speed_value_label.setText(f"~{duration_s:.0f} s per loop")
 
     def _build_parameter_sections(self) -> None:
         intro_card = ExperimentCard(
@@ -5705,6 +5730,30 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         presets_card.body_layout.addWidget(self.sci_fi_preset_button)
         presets_card.body_layout.addWidget(self.random_weird_button)
         self.parameter_layout.addWidget(presets_card)
+
+        speed_card = ExperimentCard(
+            "Speed",
+            "How fast the spine travels through the whole sequence. Drag right for "
+            "faster, left for slower / more cinematic. Adjust any time before running.",
+        )
+        speed_row = QHBoxLayout()
+        slow_label = QLabel("slower")
+        slow_label.setProperty("role", "muted")
+        fast_label = QLabel("faster")
+        fast_label.setProperty("role", "muted")
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(1, 100)
+        self.speed_slider.setSingleStep(1)
+        self.speed_slider.setPageStep(10)
+        self.speed_slider.valueChanged.connect(self._on_speed_changed)
+        speed_row.addWidget(slow_label)
+        speed_row.addWidget(self.speed_slider, 1)
+        speed_row.addWidget(fast_label)
+        speed_card.body_layout.addLayout(speed_row)
+        self.speed_value_label = QLabel("")
+        self.speed_value_label.setProperty("role", "muted")
+        speed_card.body_layout.addWidget(self.speed_value_label)
+        self.parameter_layout.addWidget(speed_card)
 
         run_mode_card = ExperimentCard(
             "Run Mode",
@@ -5779,13 +5828,14 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             "waypoint_source": str(waypoint_source),
             "auto_select_seed": bool(auto_select_seed),
             "relay_seed": int(relay_seed),
-            # Smoothness comes from the dense 30 Hz blended path, so the servo
-            # must NOT be throttled: profile 0 = no artificial speed/accel cap,
-            # the servo just tracks the stream. A slow profile_velocity here is
-            # what made the motion lag and stutter.
+            # Smoothness comes from the dense, high-rate blended path, so the
+            # servo must NOT be throttled: profile 0 = no artificial speed/accel
+            # cap, the servo just tracks the stream. A slow profile_velocity
+            # here is what made the motion lag and stutter. 50 Hz is the
+            # realistic 8-servo sync-write ceiling (highest smooth sampling).
             "profile_velocity": 0,
             "profile_acceleration": 0,
-            "command_rate_hz": 30.0,
+            "command_rate_hz": 50.0,
             "hold_at_start_s": 1.0,
             "hold_at_end_s": 1.5,
             "return_to_neutral_at_end": True,
@@ -5803,6 +5853,9 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         config = TwoSegmentSlowMotionDemoConfig.from_dict(self.controller.config_payload())
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
         self._set_checkbox(self.return_to_neutral_check, bool(config.return_to_neutral_at_end))
+        with QSignalBlocker(self.speed_slider):
+            self.speed_slider.setValue(self._duration_s_to_speed_slider(float(config.video_duration_s)))
+        self.speed_value_label.setText(f"~{float(config.video_duration_s):.0f} s per loop")
         # Make the run mode impossible to miss: dry-run writes a full bundle
         # but never moves the robot, which is the #1 "nothing is running"
         # confusion. The button text states the mode so a preview is never

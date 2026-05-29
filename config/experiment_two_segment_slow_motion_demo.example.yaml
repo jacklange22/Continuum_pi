@@ -25,7 +25,9 @@ early_switch_fraction: 0.72
 waypoint_source: preset_weird # preset_weird (curated) | seeded_maximin (random)
 relay_seed: 0                 # base seed for seeded_maximin
 auto_select_seed: true        # roll forward to a well-separated seed automatically
-command_rate_hz: 30.0         # dense blend sample + bus write rate (smoothness)
+command_rate_hz: 50.0         # dense blend sample + bus write rate; ~50 Hz is the
+                              # 8-servo sync-write ceiling = highest smooth sampling.
+                              # Higher just makes the demo run in slow motion.
 
 # Smoothness comes from the dense 30 Hz blended path, so the servo must NOT
 # be throttled. profile 0 = no artificial speed/accel cap; the servo just

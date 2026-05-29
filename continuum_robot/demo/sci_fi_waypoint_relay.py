@@ -68,7 +68,7 @@ DEFAULT_WAYPOINT_COUNT = 9
 DEFAULT_VIDEO_DURATION_S = 20.0
 DEFAULT_EARLY_SWITCH_FRACTION = 0.72
 DEFAULT_AMPLITUDE_CM = 0.35
-DEFAULT_COMMAND_RATE_HZ = 30.0  # dense blend sample + bus write rate
+DEFAULT_COMMAND_RATE_HZ = 50.0  # dense blend sample + bus write rate (bus ceiling)
 DEFAULT_MIN_WAYPOINT_SEPARATION_NORM = 0.40  # in units of amplitude_cm
 DEFAULT_MAX_WAYPOINT_SEPARATION_NORM = 2.20  # √8 ≈ 2.83 is theoretical max
 DEFAULT_PROFILE_VELOCITY = 45  # XC330 units = 0.229 rpm/unit → ~10 rpm
@@ -502,11 +502,12 @@ def speed_advisory(config: SciFiRelayConfig) -> SciFiSpeedAdvisory:
             "barely have time to move between commands; raise video_duration_s or lower "
             "waypoint_count."
         )
-    if float(config.command_rate_hz) > 30.0:
+    if float(config.command_rate_hz) > 55.0:
         warnings.append(
-            f"command_rate_hz={float(config.command_rate_hz):.1f} exceeds the realistic 30 Hz "
-            "DYNAMIXEL ceiling. The relay only sends waypoint_count bus writes regardless of "
-            "this rate; raising it just spins the bookkeeping loop."
+            f"command_rate_hz={float(config.command_rate_hz):.1f} exceeds the ~50 Hz 8-servo "
+            "sync-write ceiling. The relay streams one dense bus write per sample, so a rate the "
+            "bus cannot sustain just makes the demo run in slow motion (it falls behind the "
+            "schedule). Keep it <= 50 Hz."
         )
     if velocity > 120:
         warnings.append(
