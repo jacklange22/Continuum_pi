@@ -61,10 +61,9 @@ WAYPOINT_SOURCE_PRESET = "preset_weird"
 WAYPOINT_SOURCE_SEEDED = "seeded_maximin"
 SUPPORTED_WAYPOINT_SOURCES = (WAYPOINT_SOURCE_PRESET, WAYPOINT_SOURCE_SEEDED)
 
-# Default waypoint count is 9: matches the preset list length, fits a
-# 20-second video at ~2.2 s per segment which reads as "smooth slow drift"
-# rather than "rapid sequence of poses".
-DEFAULT_WAYPOINT_COUNT = 9
+# Default waypoint count is 18: matches the preset list length. More
+# waypoints in weirder places = a busier, more dynamic "weird video".
+DEFAULT_WAYPOINT_COUNT = 18
 DEFAULT_VIDEO_DURATION_S = 20.0
 DEFAULT_EARLY_SWITCH_FRACTION = 0.72
 DEFAULT_AMPLITUDE_CM = 0.35
@@ -74,23 +73,37 @@ DEFAULT_MAX_WAYPOINT_SEPARATION_NORM = 2.20  # √8 ≈ 2.83 is theoretical max
 DEFAULT_PROFILE_VELOCITY = 45  # XC330 units = 0.229 rpm/unit → ~10 rpm
 DEFAULT_PROFILE_ACCELERATION = 18  # XC330 units = ~3 800 rpm²
 
-# Preset of 9 normalized 4D waypoints. Each entry is
+# Preset of 18 normalized 4D waypoints. Each entry is
 # ``[bottom_x, bottom_y, top_x, top_y]`` in tip-target convention.
-# Hand-picked so that:
-#   - consecutive waypoints are at least 0.7 norm apart in 4D
-#   - both bottom and top components are non-trivial at every step
-#   - bottom and top intentionally bend in opposing directions ≥3 times
-#     to make the two-segment articulation visually obvious on camera
+# Designed (not random) so that:
+#   - the two X axes are near anti-phase (bottom_x ≈ -top_x): the bottom and
+#     top segments counter-bend, so streaming through them makes the spine
+#     undulate like a wave / slither instead of leaning one way;
+#   - the Y axes wander on incommensurate frequencies for an organic, weird
+#     feel that never quite repeats;
+#   - consecutive waypoints stay >= 0.7 norm apart in 4D (visual variety);
+#   - both bottom and top components are non-trivial at every step.
+# Generated via sin/cos with step 2.4, X anti-phase offset 2.6 rad; see the
+# repo history for the generator. Scaled by amplitude_cm at runtime.
 PRESET_WEIRD_WAYPOINTS_NORM: tuple[tuple[float, float, float, float], ...] = (
-    ( 0.75, -0.20, -0.55,  0.70),
-    (-0.65,  0.55,  0.80,  0.15),
-    ( 0.15,  0.80, -0.75, -0.45),
-    (-0.85, -0.25,  0.35, -0.85),
-    ( 0.50,  0.65,  0.65, -0.65),
-    (-0.20, -0.90, -0.90,  0.20),
-    ( 0.90,  0.10, -0.10, -0.90),
-    (-0.55,  0.00,  0.85,  0.55),
-    ( 0.25, -0.75,  0.75, -0.25),
+    ( 0.00,  0.56,  0.52,  0.96),
+    ( 0.68, -1.00, -0.96,  0.89),
+    (-1.00,  0.62,  0.90,  0.34),
+    ( 0.79,  0.27, -0.37, -0.41),
+    (-0.17, -0.94, -0.36, -0.93),
+    (-0.54,  0.84,  0.89, -0.93),
+    ( 0.97, -0.05, -0.96, -0.42),
+    (-0.89, -0.77,  0.52,  0.32),
+    ( 0.34,  0.97,  0.19,  0.89),
+    ( 0.38, -0.37, -0.80,  0.96),
+    (-0.91, -0.53,  0.99,  0.50),
+    ( 0.95,  1.00, -0.66, -0.24),
+    (-0.50, -0.65, -0.02, -0.84),
+    (-0.21, -0.23,  0.69, -0.98),
+    ( 0.82,  0.92, -1.00, -0.57),
+    (-0.99, -0.86,  0.78,  0.15),
+    ( 0.64,  0.09, -0.16,  0.79),
+    ( 0.04,  0.75, -0.55,  0.99),
 )
 
 
