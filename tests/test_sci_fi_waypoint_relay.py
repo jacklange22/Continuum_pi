@@ -177,7 +177,9 @@ class TestSpeedAdvisory:
         assert any("amplitude_cm" in w for w in adv.warnings)
 
     def test_high_command_rate_warns(self) -> None:
-        adv = speed_advisory(SciFiRelayConfig(command_rate_hz=50.0))
+        # Above the ~50 Hz 8-servo sync-write ceiling the demo would fall
+        # behind its schedule (slow motion), so the advisory flags it.
+        adv = speed_advisory(SciFiRelayConfig(command_rate_hz=80.0))
         assert any("command_rate_hz" in w for w in adv.warnings)
 
     def test_short_interval_warns_and_pushes_aggressive(self) -> None:

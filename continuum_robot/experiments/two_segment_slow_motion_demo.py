@@ -185,10 +185,11 @@ class TwoSegmentSlowMotionDemoConfig:
     max_waypoint_separation_norm: float = 2.20
     # For sci_fi_waypoint_relay this is the dense blend sample rate AND the
     # bus write rate (the relay streams an interpolated path, not one write
-    # per waypoint). 30 Hz reads as smooth, continuous motion and sits at the
-    # realistic 8-servo sync-write ceiling; telemetry is decimated so it does
-    # not steal time from the write cadence.
-    command_rate_hz: float = 30.0
+    # per waypoint). 50 Hz is the realistic 8-servo sync-write ceiling and
+    # reads as smooth continuous motion; telemetry is decimated so it does
+    # not steal time from the write cadence. Going higher just makes the demo
+    # run in slow motion (the loop falls behind a schedule the bus can't meet).
+    command_rate_hz: float = 50.0
 
     # Mode + provenance
     dry_run: bool = True  # default ON: demo is meant to be previewed first
@@ -268,7 +269,7 @@ class TwoSegmentSlowMotionDemoConfig:
             max_waypoint_separation_norm=max(
                 0.0, float(payload.get("max_waypoint_separation_norm", 2.20)),
             ),
-            command_rate_hz=max(0.5, float(payload.get("command_rate_hz", 30.0))),
+            command_rate_hz=max(0.5, float(payload.get("command_rate_hz", 50.0))),
             dry_run=bool(payload.get("dry_run", True)),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", False)),
             tracker_overlay_enabled=bool(payload.get("tracker_overlay_enabled", False)),
