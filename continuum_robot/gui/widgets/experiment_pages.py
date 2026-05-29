@@ -5663,11 +5663,11 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
     )
 
     # Speed slider maps (inversely) to the relay's video_duration_s: dragging
-    # right (higher slider value) = shorter duration = faster motion. Bounds
-    # chosen so the slow end is a slow cinematic drift and the fast end is a
-    # brisk-but-still-smooth sweep.
-    SPEED_MIN_DURATION_S = 6.0   # slider = 100 (fastest)
-    SPEED_MAX_DURATION_S = 45.0  # slider = 1   (slowest)
+    # right (higher slider value) = shorter duration = faster motion. The fast
+    # floor keeps ~0.6 s/waypoint at the default 18 waypoints so the spine
+    # still visibly flows through each pose instead of blurring.
+    SPEED_MIN_DURATION_S = 11.0  # slider = 100 (fastest)
+    SPEED_MAX_DURATION_S = 40.0  # slider = 1   (slowest)
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
@@ -5815,16 +5815,18 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
     ) -> None:
         """Push a complete, known-good sci-fi relay config to the controller.
 
-        The tick caps are intentionally NOT set here: the experiment sizes
-        them to the amplitude at setup() so a live run always clears precheck.
-        Dry-run defaults ON; the operator un-checks it to record.
+        The soft/step tick caps are sized to the amplitude by the experiment at
+        setup(); we set the hard ceiling to 1000 here so the bigger-amplitude
+        weird motions are never blocked. Dry-run defaults OFF (operator asked) --
+        the Run button shows the live mode and the operator can re-check dry-run
+        to preview.
         """
         preset = {
             "pattern": "sci_fi_waypoint_relay",
-            "video_duration_s": 20.0,
-            "waypoint_count": 9,
-            "amplitude_cm": 0.35,
-            "early_switch_fraction": 0.72,
+            "video_duration_s": 14.0,        # faster default (speed slider tweaks it)
+            "waypoint_count": 18,            # a bunch more weird poses
+            "amplitude_cm": 0.5,             # a bit bigger
+            "early_switch_fraction": 0.5,    # more overlap = less settling/pause = flows
             "waypoint_source": str(waypoint_source),
             "auto_select_seed": bool(auto_select_seed),
             "relay_seed": int(relay_seed),
@@ -5836,11 +5838,12 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             "profile_velocity": 0,
             "profile_acceleration": 0,
             "command_rate_hz": 50.0,
-            "hold_at_start_s": 1.0,
-            "hold_at_end_s": 1.5,
+            "hard_max_tick_delta_from_startup": 1000,  # operator-requested ceiling
+            "hold_at_start_s": 0.5,
+            "hold_at_end_s": 0.5,
             "return_to_neutral_at_end": True,
-            # Default ON. Operator un-checks when ready to record.
-            "dry_run": True,
+            # Default OFF (operator asked). Re-check dry-run to preview.
+            "dry_run": False,
         }
         for key, value in preset.items():
             self.controller.set_config_value(key, value)

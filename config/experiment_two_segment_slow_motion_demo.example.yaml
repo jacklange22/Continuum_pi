@@ -6,22 +6,24 @@
 # telemetry. The bundle is tagged demo_only=True / valid_for_model_training
 # =False on every artifact.
 #
-# Defaults to the curated 20-second "Sci-Fi Spine" so the GUI loads a
-# known-good, runs-first-try demo with nothing to tune. The GUI's two
-# preset buttons (curated / random) just re-push these values.
+# Defaults to the curated "Sci-Fi Spine" so the GUI loads a known-good,
+# runs-first-try demo with nothing to tune. The GUI's two preset buttons
+# (curated / random) re-push these values; the Speed slider tweaks
+# video_duration_s live.
 
 pattern: sci_fi_waypoint_relay
 
 # --- Sci-fi waypoint relay knobs -------------------------------------------
-video_duration_s: 20.0        # total motion length (excludes the neutral holds)
-waypoint_count: 9             # distinct weird poses the spine relays through
-amplitude_cm: 0.35            # per-axis tip-target bound (kept <= 0.5 for the rig)
+video_duration_s: 14.0        # total motion length (faster default; Speed slider tunes it)
+waypoint_count: 18            # distinct weird poses the spine relays through
+amplitude_cm: 0.5             # per-axis tip-target bound
 # early_switch_fraction is the look of the demo. It is BUILT INTO the path:
 # each waypoint-to-waypoint transition is a smoothstep, and the next one
 # starts when the current is only this fraction of the way through. 1.0 =
 # settle on every waypoint (mechanical); lower = transitions overlap so the
-# spine rounds the corners and never fully settles (the sci-fi flow).
-early_switch_fraction: 0.72
+# spine rounds the corners and never fully settles. 0.5 = lots of overlap =
+# minimal pausing at each pose, a continuous flowing wave.
+early_switch_fraction: 0.5
 waypoint_source: preset_weird # preset_weird (curated) | seeded_maximin (random)
 relay_seed: 0                 # base seed for seeded_maximin
 auto_select_seed: true        # roll forward to a well-separated seed automatically
@@ -29,23 +31,23 @@ command_rate_hz: 50.0         # dense blend sample + bus write rate; ~50 Hz is t
                               # 8-servo sync-write ceiling = highest smooth sampling.
                               # Higher just makes the demo run in slow motion.
 
-# Smoothness comes from the dense 30 Hz blended path, so the servo must NOT
-# be throttled. profile 0 = no artificial speed/accel cap; the servo just
+# Smoothness comes from the dense, high-rate blended path, so the servo must
+# NOT be throttled. profile 0 = no artificial speed/accel cap; the servo just
 # tracks the stream. (A slow profile_velocity here causes laggy, stuttery
 # motion.) The demo restores the bus defaults on finalize. If you ever see
 # micro-buzz, raise profile_acceleration to ~20-40 for gentler micro-moves.
 profile_velocity: 0
 profile_acceleration: 0
 
-# Neutral holds bracketing the blend.
-hold_at_start_s: 1.0
-hold_at_end_s: 1.5
+# Neutral holds bracketing the blend (short, for a tight video loop).
+hold_at_start_s: 0.5
+hold_at_end_s: 0.5
 
-# Safety caps. The experiment auto-sizes these to the amplitude at setup()
-# for the relay, so a live run always clears precheck; the values below are
-# only a floor / a record of intent.
+# Safety caps. The experiment auto-sizes the soft + step caps to the amplitude
+# at setup() so a live run always clears precheck; the hard cap below is the
+# absolute ceiling (raised to 1000 so the bigger weird motions are not blocked).
 max_tick_delta_from_startup: 200
-hard_max_tick_delta_from_startup: 600
+hard_max_tick_delta_from_startup: 1000
 max_step_ticks_per_update: 25
 current_warning_ma: 800
 sustained_overcurrent_ma: 1200
@@ -53,10 +55,10 @@ sustained_overcurrent_sample_count: 3
 top_segment_tendon_routing_compensation: true
 return_to_neutral_at_end: true
 
-# Mode + provenance. dry_run defaults to True so the operator previews the
-# trajectory and trace bundle without writing the bus. Un-check it in the
-# GUI (or set false here) for the live recording.
-dry_run: true
+# Mode + provenance. dry_run defaults to FALSE (operator asked) so the demo is
+# live on run; the GUI Run button shows the mode and you can re-check dry-run
+# to preview the trajectory/bundle without moving the robot.
+dry_run: false
 allow_servo_only_test_run: false
 tracker_overlay_enabled: false
 run_label: ""
