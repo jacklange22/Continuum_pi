@@ -84,10 +84,19 @@ DEFAULT_MAX_MOTION_WAIT_S = 10.0  # safety cap so a stuck servo cannot hang the 
 DEFAULT_MOTION_COMPLETE_CONSECUTIVE_POLLS = 2  # require N consecutive stable polls before declaring complete
 DEFAULT_MIN_REPEATS_PER_TARGET = 15
 DEFAULT_MAX_REJECTED_FRACTION = 0.10
+# full_factorial_grid: N equally-spaced levels on each of the 4 command axes,
+# taken as the full Cartesian product. Total targets = N^4, so this number is
+# kept small by default (3 -> 81 targets: low/centre/high per axis). The
+# operator picks N via ``grid_points_per_axis``; it is clamped to a sane
+# ceiling so a stray value can't request a million-pose run.
+DEFAULT_GRID_POINTS_PER_AXIS = 3
+MIN_GRID_POINTS_PER_AXIS = 2
+MAX_GRID_POINTS_PER_AXIS = 10  # 10^4 = 10,000 targets — the practical ceiling
 SUPPORTED_TARGET_GENERATOR_MODES = (
     "workspace_latin_hypercube",
     "rings_and_axes",
     "grid_subsample",
+    "full_factorial_grid",
 )
 AMPLITUDE_PRESETS_CM = (0.10, 0.25, 0.50, 0.75, 1.00)
 
@@ -146,6 +155,12 @@ class TwoSegmentWorkspaceRepeatabilityConfig:
     repeats_per_target: int = DEFAULT_REPEATS_PER_TARGET
     max_segment_displacement_cm: float = DEFAULT_AMPLITUDE_CM
     target_generator_mode: str = "workspace_latin_hypercube"
+    # Per-axis resolution for the ``full_factorial_grid`` mode. Ignored by the
+    # other modes. Total targets in grid mode = grid_points_per_axis ** 4
+    # (e.g. 3 -> 81, 4 -> 256, 5 -> 625, 10 -> 10,000). When grid mode is
+    # active, ``target_count`` is derived from this value so all downstream
+    # planning / validation stays consistent.
+    grid_points_per_axis: int = DEFAULT_GRID_POINTS_PER_AXIS
     random_seed: int = 0
     return_to_neutral_between_visits: bool = True
     neutral_settle_s: float = DEFAULT_NEUTRAL_SETTLE_S
@@ -195,13 +210,30 @@ class TwoSegmentWorkspaceRepeatabilityConfig:
             mode = "workspace_latin_hypercube"
         requested_roles = payload.get("requested_tool_roles") or payload.get("tool_roles") or {}
         target_threshold = payload.get("target_distal_rms_threshold_mm")
+        grid_points_per_axis = max(
+            MIN_GRID_POINTS_PER_AXIS,
+            min(
+                MAX_GRID_POINTS_PER_AXIS,
+                int(payload.get("grid_points_per_axis", DEFAULT_GRID_POINTS_PER_AXIS)),
+            ),
+        )
+        # In full_factorial_grid mode the grid resolution defines the target
+        # count (N^4). Deriving it here keeps target_count, the round-robin
+        # visit plan, and the thesis-validity check (planned_target_count >=
+        # target_count) all consistent without the operator having to keep
+        # two numbers in sync.
+        if mode == "full_factorial_grid":
+            resolved_target_count = int(grid_points_per_axis) ** 4
+        else:
+            resolved_target_count = max(3, int(payload.get("target_count", DEFAULT_TARGET_COUNT)))
         return cls(
-            target_count=max(3, int(payload.get("target_count", DEFAULT_TARGET_COUNT))),
+            target_count=resolved_target_count,
             repeats_per_target=max(1, int(payload.get("repeats_per_target", DEFAULT_REPEATS_PER_TARGET))),
             max_segment_displacement_cm=max(
                 0.0, float(payload.get("max_segment_displacement_cm", DEFAULT_AMPLITUDE_CM))
             ),
             target_generator_mode=mode,
+            grid_points_per_axis=int(grid_points_per_axis),
             random_seed=int(payload.get("random_seed", 0)),
             return_to_neutral_between_visits=bool(payload.get("return_to_neutral_between_visits", True)),
             neutral_settle_s=max(0.0, float(payload.get("neutral_settle_s", DEFAULT_NEUTRAL_SETTLE_S))),
@@ -358,11 +390,48 @@ def _grid_subsample_4d(
     return [tuple(float(v) for v in grid[i]) for i in selected]
 
 
+def _full_factorial_grid_4d(
+    *,
+    points_per_axis: int,
+    amplitude_cm: float,
+) -> list[tuple[float, float, float, float]]:
+    """Full Cartesian product of ``points_per_axis`` equally-spaced levels on
+    each of the 4 command axes — a regular 4D lattice covering the entire box.
+
+    Each axis is ``np.linspace(-amp, +amp, points_per_axis)`` so the endpoints
+    (the box corners) ARE included, unlike the LHS midpoint scheme. With
+    points_per_axis = 3 the levels are exactly ``[-amp, 0, +amp]``, giving the
+    minimal grid that hits the centre, every face, edge, and corner. Total
+    targets = points_per_axis ** 4. Deterministic (no RNG): the lattice is
+    fully specified by points_per_axis and amplitude.
+
+    The returned ordering is meshgrid C-order, but the run reshuffles the
+    visit sequence per cycle anyway (build_round_robin_visit_order), so the
+    lattice ordering does not bias the captures.
+    """
+    n = max(1, int(points_per_axis))
+    if n == 1:
+        return [(0.0, 0.0, 0.0, 0.0)]
+    coords = np.linspace(-float(amplitude_cm), float(amplitude_cm), n)
+    grid = np.array(
+        np.meshgrid(coords, coords, coords, coords, indexing="ij")
+    ).reshape(4, -1).T
+    return [
+        (float(row[0]), float(row[1]), float(row[2]), float(row[3]))
+        for row in grid
+    ]
+
+
 def build_two_segment_workspace_targets(
     config: TwoSegmentWorkspaceRepeatabilityConfig,
 ) -> list[TwoSegmentWorkspaceTarget]:
     """Build the canonical target list for the workspace repeatability run."""
-    if config.target_generator_mode == "workspace_latin_hypercube":
+    if config.target_generator_mode == "full_factorial_grid":
+        raw = _full_factorial_grid_4d(
+            points_per_axis=int(config.grid_points_per_axis),
+            amplitude_cm=float(config.max_segment_displacement_cm),
+        )
+    elif config.target_generator_mode == "workspace_latin_hypercube":
         raw = _latin_hypercube_4d(
             target_count=int(config.target_count),
             amplitude_cm=float(config.max_segment_displacement_cm),
@@ -1226,6 +1295,7 @@ class TwoSegmentWorkspaceRepeatabilityExperiment(BaseExperiment):
         session.set_metric("rejected_captures", int(rejected))
         session.set_metric("stop_reason", self._stop_reason or "unspecified")
         session.set_metric("target_generator_mode", str(self.config.target_generator_mode))
+        session.set_metric("grid_points_per_axis", int(self.config.grid_points_per_axis))
         session.set_metric("random_seed", int(self.config.random_seed))
         session.set_metric("max_segment_displacement_cm", float(self.config.max_segment_displacement_cm))
         session.set_metric("neutral_settle_s", float(self.config.neutral_settle_s))
