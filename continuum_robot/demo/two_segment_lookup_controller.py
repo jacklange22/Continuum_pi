@@ -52,6 +52,13 @@ class LookupControllerConfig:
     expected_commanded_servo_ids: list[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 7, 8])
     expected_bottom_segment_key: str | None = None
     expected_top_segment_key: str | None = None
+    # When the map carries no bottom/top assignment (e.g. built from an early
+    # servo_only dataset that never recorded `physical_assembly`), treat the
+    # assignment as UNKNOWN rather than a conflict. With this flag set, an
+    # unknown map assembly is allowed (servo IDs still must match, and a
+    # genuine *conflicting* assignment is still hard-blocked). Library default
+    # is strict; the demo opts in.
+    allow_unknown_map_assembly: bool = False
     absolute_min_tick: int = DEFAULT_ABSOLUTE_MIN_TICK
     absolute_max_tick: int = DEFAULT_ABSOLUTE_MAX_TICK
     extra_per_servo_tick_headroom: int = 0
@@ -174,6 +181,20 @@ class TwoSegmentWorkspaceLookupController:
     def commanded_servo_ids(self) -> list[int]:
         return [int(v) for v in (self.metadata.get("commanded_servo_ids") or [])]
 
+    @property
+    def map_assembly_is_unknown(self) -> bool:
+        """True when the map carries no bottom/top segment assignment.
+
+        This happens when the source dataset never recorded ``physical_assembly``
+        (typical of early servo_only runs). The map is still usable — the goal
+        ticks are keyed by servo ID — but the bottom/top compatibility check
+        cannot be verified, so the demo surfaces a loud warning.
+        """
+        assembly = self.bottom_top_assignment
+        return not str(assembly.get("bottom_segment_key") or "") and not str(
+            assembly.get("top_segment_key") or ""
+        )
+
     # ------------------------------------------------------------------
     # Compatibility checks (called once per demo run)
     # ------------------------------------------------------------------
@@ -190,18 +211,36 @@ class TwoSegmentWorkspaceLookupController:
                 f"servo_id_mismatch:map={map_ids},runtime={expected_ids}"
             )
         assembly = self.bottom_top_assignment
+        allow_unknown = bool(getattr(self.config, "allow_unknown_map_assembly", False))
+        map_bottom = str(assembly.get("bottom_segment_key") or "")
+        map_top = str(assembly.get("top_segment_key") or "")
         if self.config.expected_bottom_segment_key:
-            if str(assembly.get("bottom_segment_key") or "") != str(self.config.expected_bottom_segment_key):
+            if not map_bottom:
+                # Map never recorded a bottom/top assignment: UNKNOWN, not a
+                # conflict. Allowed when the operator opts in; otherwise block
+                # with a reason that says it is missing (not mismatched).
+                if not allow_unknown:
+                    reasons.append(
+                        f"bottom_segment_key_unknown_in_map:runtime={self.config.expected_bottom_segment_key!r}"
+                    )
+            elif map_bottom != str(self.config.expected_bottom_segment_key):
                 reasons.append(
                     f"bottom_segment_key_mismatch:map={assembly.get('bottom_segment_key')!r},"
                     f"runtime={self.config.expected_bottom_segment_key!r}"
                 )
         if self.config.expected_top_segment_key:
-            if str(assembly.get("top_segment_key") or "") != str(self.config.expected_top_segment_key):
+            if not map_top:
+                if not allow_unknown:
+                    reasons.append(
+                        f"top_segment_key_unknown_in_map:runtime={self.config.expected_top_segment_key!r}"
+                    )
+            elif map_top != str(self.config.expected_top_segment_key):
                 reasons.append(
                     f"top_segment_key_mismatch:map={assembly.get('top_segment_key')!r},"
                     f"runtime={self.config.expected_top_segment_key!r}"
                 )
+        # A map that pooled disagreeing assemblies is a genuine conflict and is
+        # always blocked, regardless of the unknown-assembly allowance.
         if assembly.get("mixed_assemblies_detected"):
             reasons.append("map_mixed_assemblies_detected")
         return (not reasons, reasons)

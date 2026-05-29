@@ -6253,6 +6253,32 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
         )
         map_form.addRow("Map Path", self.map_path_edit)
         map_card.body_layout.addLayout(map_form)
+        button_row = QHBoxLayout()
+        self.use_latest_map_button = QPushButton("Use Latest Built Map")
+        self.use_latest_map_button.setToolTip(
+            "Scan data/experiments/two_segment_workspace_lookup_maps/ and load the newest "
+            "two_segment_workspace_lookup_map.json."
+        )
+        self.use_latest_map_button.clicked.connect(self._on_use_latest_map)
+        self.browse_map_button = QPushButton("Browse…")
+        self.browse_map_button.clicked.connect(self._on_browse_map)
+        button_row.addWidget(self.use_latest_map_button)
+        button_row.addWidget(self.browse_map_button)
+        button_row.addStretch(1)
+        map_card.body_layout.addLayout(button_row)
+        self.map_status_label = QLabel("")
+        self.map_status_label.setProperty("role", "muted")
+        self.map_status_label.setWordWrap(True)
+        map_card.body_layout.addWidget(self.map_status_label)
+        build_hint = QLabel(
+            "No map yet? Build one from a collected dataset (servo_only datasets need "
+            "--allow-lower-trust):\n"
+            "  .venv/bin/python -m continuum_robot.demo.two_segment_workspace_lookup "
+            "--latest --allow-lower-trust"
+        )
+        build_hint.setProperty("role", "muted")
+        build_hint.setWordWrap(True)
+        map_card.body_layout.addWidget(build_hint)
         self.parameter_layout.addWidget(map_card)
 
         roles_card = ExperimentCard(
@@ -6339,6 +6365,17 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
         self.servo_only_check.toggled.connect(
             lambda value: self.controller.set_config_value("allow_servo_only_test_run", bool(value))
         )
+        self.allow_unknown_assembly_check = QCheckBox(
+            "Allow map with unknown bottom/top assignment (servo_only-derived maps)"
+        )
+        self.allow_unknown_assembly_check.setToolTip(
+            "Maps built from early servo_only datasets carry no bottom/top assignment. "
+            "Allow running on them anyway: servo IDs must still match and a genuine "
+            "CONFLICTING assignment is still blocked. A loud warning is recorded into the run."
+        )
+        self.allow_unknown_assembly_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_unknown_map_assembly", bool(value))
+        )
         safety_form.addRow("Control rate (Hz)", self.control_rate_spin)
         safety_form.addRow("Nearest-distance warning (mm)", self.nearest_warning_spin)
         safety_form.addRow("Nearest-distance hard stop (mm)", self.max_nearest_spin)
@@ -6346,6 +6383,7 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
         safety_form.addRow("", self.allow_interp_check)
         safety_form.addRow("", self.dry_run_check)
         safety_form.addRow("", self.servo_only_check)
+        safety_form.addRow("", self.allow_unknown_assembly_check)
         safety_card.body_layout.addLayout(safety_form)
         self.summary_widget = KeyValueSummaryWidget()
         safety_card.body_layout.addWidget(self.summary_widget)
@@ -6370,6 +6408,7 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
         self._set_checkbox(self.allow_interp_check, bool(config.allow_interpolation))
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
         self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
+        self._set_checkbox(self.allow_unknown_assembly_check, bool(config.allow_unknown_map_assembly))
         context = self.controller.settings.robot.operating_context()
         self.summary_widget.set_pairs(
             [
@@ -6379,6 +6418,7 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
                 ("Tip Tool", f"{config.tip_tool_id} (distal/tip coil; live tracking OPTIONAL)"),
                 ("Expected Map Distal Tool", str(config.expected_map_distal_tool_id)),
                 ("Interpolation", config.interpolation_mode + (" (off by default)" if not config.allow_interpolation else "")),
+                ("Unknown-assembly Maps", "allowed (servo_only maps)" if config.allow_unknown_map_assembly else "blocked"),
                 ("Demo-only Validity", "demo_only=True · not_closed_loop_validated=True · valid_for_model_training=False"),
             ]
         )
@@ -6402,7 +6442,60 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
             config.allow_interpolation,
             config.dry_run,
             config.allow_servo_only_test_run,
+            config.allow_unknown_map_assembly,
         )
+
+    def _latest_built_map_path(self) -> "Path | None":
+        """Newest two_segment_workspace_lookup_map.json under the maps folder."""
+        base = (
+            Path(self.controller.project_root)
+            / "data"
+            / "experiments"
+            / "two_segment_workspace_lookup_maps"
+        )
+        if not base.exists():
+            return None
+        candidates = sorted(
+            base.glob("*/two_segment_workspace_lookup_map.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
+    def _set_map_path(self, path: "Path") -> None:
+        """Store a project-root-relative map path when possible."""
+        try:
+            text = str(Path(path).resolve().relative_to(Path(self.controller.project_root).resolve()))
+        except ValueError:
+            text = str(path)
+        self.map_path_edit.setText(text)
+        self.controller.set_config_value("map_path", text)
+
+    def _on_use_latest_map(self) -> None:
+        latest = self._latest_built_map_path()
+        if latest is None:
+            self.map_status_label.setText(
+                "No built maps found under data/experiments/two_segment_workspace_lookup_maps/. "
+                "Build one with the CLI shown below."
+            )
+            return
+        self._set_map_path(latest)
+        self.map_status_label.setText(f"Loaded latest map: {latest.parent.name}")
+
+    def _on_browse_map(self) -> None:
+        base = (
+            Path(self.controller.project_root)
+            / "data"
+            / "experiments"
+            / "two_segment_workspace_lookup_maps"
+        )
+        start_dir = str(base) if base.exists() else str(self.controller.project_root)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Workspace Lookup Map", start_dir, "Lookup Map (*.json)"
+        )
+        if path:
+            self._set_map_path(Path(path))
+            self.map_status_label.setText(f"Selected: {Path(path).name}")
 
     def _bottom_top_summary(self, context) -> str:
         assembly = dict(context.metadata().get("physical_assembly") or {})
