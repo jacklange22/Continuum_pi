@@ -973,20 +973,17 @@ class TestGuiIntegration:
         page = build_experiment_page(controller, "two_segment_slow_motion_demo")
         try:
             assert isinstance(page, TwoSegmentSlowMotionDemoPage)
-            assert hasattr(page, "pattern_combo")
-            assert hasattr(page, "amplitude_combo")
-            assert hasattr(page, "cycle_duration_spin")
-            assert hasattr(page, "cycles_spin")
-            assert hasattr(page, "update_rate_spin")
-            assert hasattr(page, "ramp_in_spin")
-            assert hasattr(page, "ramp_out_spin")
-            assert hasattr(page, "coupling_combo")
-            assert hasattr(page, "soft_cap_spin")
-            assert hasattr(page, "hard_cap_spin")
-            assert hasattr(page, "step_cap_spin")
+            # The page is deliberately parameter-free now: two one-click
+            # presets, a dry-run/return-to-neutral toggle, and a preview.
+            assert hasattr(page, "sci_fi_preset_button")
+            assert hasattr(page, "random_weird_button")
             assert hasattr(page, "dry_run_check")
             assert hasattr(page, "return_to_neutral_check")
             assert hasattr(page, "preview_label")
+            # The old parameter-soup widgets are gone.
+            assert not hasattr(page, "pattern_combo")
+            assert not hasattr(page, "amplitude_combo")
+            assert not hasattr(page, "soft_cap_spin")
         finally:
             page.deleteLater()
         _ = app

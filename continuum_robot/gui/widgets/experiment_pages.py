@@ -5646,246 +5646,89 @@ class DynamicModelingDatasetPage(ExperimentPageBase):
 
 
 class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
-    """Operator page for the two-segment slow motion presentation demo.
+    """Operator page for the two-segment weird sci-fi spine demo.
 
-    Bounded smooth command-space pattern (figure-8, circle, sweep, ...) over
-    the dual-segment workspace. Open-loop, demo-only -- the page makes the
-    demo-only contract visible to the operator on every screen.
+    Deliberately parameter-free: the operator picks a one-click preset (a
+    curated weird-waypoint relay or a fresh random one), previews it in
+    dry-run, then un-checks dry-run to record. Open-loop, demo-only -- the
+    page keeps the demo-only contract visible on every screen.
     """
 
     refresh_policy = "manual"
     page_hint = (
-        "Open-loop two-segment motion demo. Drives the stacked robot through "
-        "a slow smooth command pattern. NOT data collection; NOT closed-loop; "
-        "NOT thesis-grade. Start with figure-8 at 0.25 cm for 1-2 cycles."
+        "One-click weird sci-fi spine demo. Pick a preset, preview it in dry-run, "
+        "then un-check dry-run to record. No parameters to tune. Open-loop and "
+        "demo-only: NOT data collection; NOT closed-loop; NOT thesis-grade."
     )
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
-        self.run_button.setText("Run Slow Motion Demo")
+        self.run_button.setText("Run Weird Sci-Fi Demo")
 
     def _build_parameter_sections(self) -> None:
-        pattern_card = ExperimentCard(
-            "Motion Pattern",
-            "Smooth command-space path. Amplitude is in tip-target cm per segment; the "
-            "trajectory ramps from neutral, runs the chosen cycles, and ramps back.",
+        intro_card = ExperimentCard(
+            "Weird Sci-Fi Spine Demo",
+            "One-click presentation demo. Pick a preset, preview it in dry-run, then "
+            "un-check dry-run to record. No parameters to tune — every preset is a "
+            "known-good, bounded config that runs first try.",
         )
-        pattern_form = QFormLayout()
-        self.pattern_combo = QComboBox()
-        for name in SLOW_MOTION_PATTERNS:
-            self.pattern_combo.addItem(name, name)
-        self.pattern_combo.currentTextChanged.connect(
-            lambda value: self.controller.set_config_value("pattern", str(value))
+        intro_label = QLabel(
+            "The spine relays between weird waypoints across its workspace with an "
+            "overlapping blend, so it flows from pose to pose without fully settling "
+            "— the sci-fi 'almost reaching / changing its mind' look. Open-loop and "
+            "demo-only: NOT data, NOT closed-loop, NOT thesis-grade."
         )
-        self.amplitude_combo = QComboBox()
-        for preset in SLOW_MOTION_AMPLITUDE_PRESETS_CM:
-            self.amplitude_combo.addItem(f"{preset:.2f} cm", float(preset))
-        self.amplitude_combo.currentIndexChanged.connect(self._on_amplitude_changed)
-        self.cycle_duration_spin = QDoubleSpinBox()
-        self.cycle_duration_spin.setRange(1.0, 600.0)
-        self.cycle_duration_spin.setDecimals(1)
-        self.cycle_duration_spin.setSingleStep(5.0)
-        self.cycle_duration_spin.setSuffix(" s")
-        self.cycle_duration_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("cycle_duration_s", float(value))
-        )
-        self.cycles_spin = QSpinBox()
-        self.cycles_spin.setRange(1, 100)
-        self.cycles_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("cycles", int(value))
-        )
-        self.update_rate_spin = QDoubleSpinBox()
-        # Cap at 50 Hz: a sync write to 8 XC330 servos at 1 Mbps takes ~5–10 ms
-        # of bus time, so 30–50 Hz is the realistic ceiling. The page allows
-        # picking the full range so the operator can max it out for slide
-        # videos with the cinematic_drift pattern.
-        self.update_rate_spin.setRange(0.5, 50.0)
-        self.update_rate_spin.setDecimals(1)
-        self.update_rate_spin.setSingleStep(0.5)
-        self.update_rate_spin.setSuffix(" Hz")
-        self.update_rate_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("update_rate_hz", float(value))
-        )
-        self.ramp_in_spin = QDoubleSpinBox()
-        self.ramp_in_spin.setRange(0.0, 60.0)
-        self.ramp_in_spin.setDecimals(1)
-        self.ramp_in_spin.setSingleStep(0.5)
-        self.ramp_in_spin.setSuffix(" s")
-        self.ramp_in_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("ramp_in_s", float(value))
-        )
-        self.ramp_out_spin = QDoubleSpinBox()
-        self.ramp_out_spin.setRange(0.0, 60.0)
-        self.ramp_out_spin.setDecimals(1)
-        self.ramp_out_spin.setSingleStep(0.5)
-        self.ramp_out_spin.setSuffix(" s")
-        self.ramp_out_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("ramp_out_s", float(value))
-        )
-        pattern_form.addRow("Pattern", self.pattern_combo)
-        pattern_form.addRow("Amplitude", self.amplitude_combo)
-        pattern_form.addRow("Cycle Duration", self.cycle_duration_spin)
-        pattern_form.addRow("Cycles", self.cycles_spin)
-        pattern_form.addRow("Update Rate", self.update_rate_spin)
-        pattern_form.addRow("Ramp In", self.ramp_in_spin)
-        pattern_form.addRow("Ramp Out", self.ramp_out_spin)
-        pattern_card.body_layout.addLayout(pattern_form)
-        self.parameter_layout.addWidget(pattern_card)
+        intro_label.setWordWrap(True)
+        intro_label.setProperty("role", "muted")
+        intro_card.body_layout.addWidget(intro_label)
+        self.parameter_layout.addWidget(intro_card)
 
-        coupling_card = ExperimentCard(
-            "Top/Bottom Coupling",
-            "Choose how the top segment's command relates to the bottom segment's command.",
+        presets_card = ExperimentCard(
+            "Pick a demo",
+            "Each button fully configures the demo. Both preview in dry-run first.",
         )
-        coupling_form = QFormLayout()
-        self.coupling_combo = QComboBox()
-        for name in SLOW_MOTION_COUPLINGS:
-            self.coupling_combo.addItem(name, name)
-        self.coupling_combo.currentTextChanged.connect(
-            lambda value: self.controller.set_config_value("coupling", str(value))
+        self.sci_fi_preset_button = QPushButton("20s Sci-Fi Spine (curated)")
+        self.sci_fi_preset_button.setProperty("variant", "primary")
+        self.sci_fi_preset_button.setToolTip(
+            "Nine hand-picked weird waypoints across the workspace at 0.35 cm over a "
+            "20-second video. Bottom and top segments deliberately bend in opposing "
+            "directions so the two-segment articulation reads on camera."
         )
-        self.top_scale_spin = QDoubleSpinBox()
-        self.top_scale_spin.setRange(0.0, 2.0)
-        self.top_scale_spin.setDecimals(2)
-        self.top_scale_spin.setSingleStep(0.05)
-        self.top_scale_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("top_scale", float(value))
+        self.sci_fi_preset_button.clicked.connect(self._apply_sci_fi_spine_preset)
+        self.random_weird_button = QPushButton("Random Weird Spine (new every click)")
+        self.random_weird_button.setProperty("variant", "primary")
+        self.random_weird_button.setToolTip(
+            "Same 20-second relay, but the waypoints are a fresh maximin-spread random "
+            "set each click — a different weird path through the range every time."
         )
-        self.phase_offset_spin = QDoubleSpinBox()
-        self.phase_offset_spin.setRange(-360.0, 360.0)
-        self.phase_offset_spin.setDecimals(1)
-        self.phase_offset_spin.setSingleStep(15.0)
-        self.phase_offset_spin.setSuffix(" deg")
-        self.phase_offset_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("phase_offset_deg", float(value))
-        )
-        coupling_form.addRow("Coupling", self.coupling_combo)
-        coupling_form.addRow("Top Scale", self.top_scale_spin)
-        coupling_form.addRow("Phase Offset", self.phase_offset_spin)
-        coupling_card.body_layout.addLayout(coupling_form)
-        self.parameter_layout.addWidget(coupling_card)
+        self.random_weird_button.clicked.connect(self._apply_random_weird_preset)
+        presets_card.body_layout.addWidget(self.sci_fi_preset_button)
+        presets_card.body_layout.addWidget(self.random_weird_button)
+        self.parameter_layout.addWidget(presets_card)
 
-        safety_card = ExperimentCard(
-            "Safety + Run Mode",
-            "Tick caps and overcurrent thresholds. Dry-run defaults ON so the operator "
-            "can preview before writing the bus.",
-        )
-        safety_form = QFormLayout()
-        self.soft_cap_spin = QSpinBox()
-        self.soft_cap_spin.setRange(1, 4096)
-        self.soft_cap_spin.setSingleStep(50)
-        self.soft_cap_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value))
-        )
-        self.hard_cap_spin = QSpinBox()
-        self.hard_cap_spin.setRange(1, 4096)
-        self.hard_cap_spin.setSingleStep(50)
-        self.hard_cap_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("hard_max_tick_delta_from_startup", int(value))
-        )
-        self.step_cap_spin = QSpinBox()
-        self.step_cap_spin.setRange(1, 1024)
-        self.step_cap_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("max_step_ticks_per_update", int(value))
-        )
-        self.current_warning_spin = QSpinBox()
-        self.current_warning_spin.setRange(0, 10000)
-        self.current_warning_spin.setSingleStep(50)
-        self.current_warning_spin.setSuffix(" mA")
-        self.current_warning_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("current_warning_ma", int(value))
-        )
-        self.sustained_current_spin = QSpinBox()
-        self.sustained_current_spin.setRange(0, 10000)
-        self.sustained_current_spin.setSingleStep(50)
-        self.sustained_current_spin.setSuffix(" mA")
-        self.sustained_current_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("sustained_overcurrent_ma", int(value))
+        run_mode_card = ExperimentCard(
+            "Run Mode",
+            "Dry-run builds the trajectory and preview without moving the robot. "
+            "Un-check it only when you are ready to drive the hardware.",
         )
         self.dry_run_check = QCheckBox(
-            "Dry run / preview only (default ON; flip OFF for actual live demo)"
+            "Dry run / preview only (default ON; un-check for the live recording)"
         )
         self.dry_run_check.toggled.connect(
             lambda value: self.controller.set_config_value("dry_run", bool(value))
         )
-        self.return_to_neutral_check = QCheckBox("Return to neutral on finalize")
+        self.return_to_neutral_check = QCheckBox("Return to neutral when the demo finishes")
         self.return_to_neutral_check.toggled.connect(
             lambda value: self.controller.set_config_value("return_to_neutral_at_end", bool(value))
         )
-        # Profile velocity / acceleration controls. ``0`` means "leave bus
-        # default in place" — the demo skips the write entirely when
-        # both spins read 0. Otherwise the demo pushes these to all 8
-        # commanded servos at run start and restores them on finalize.
-        # XC330 units: velocity = 0.229 rpm/unit; accel ≈ 214.577 rpm²/unit.
-        self.profile_velocity_spin = QSpinBox()
-        self.profile_velocity_spin.setRange(0, 500)
-        self.profile_velocity_spin.setSingleStep(5)
-        self.profile_velocity_spin.setSpecialValueText("bus default")
-        self.profile_velocity_spin.setToolTip(
-            "Per-servo profile velocity pushed at run start (0 = leave bus "
-            "default). Lower → slower, smoother motion between goal positions. "
-            "Recommended for slide-video recordings: 30–80."
-        )
-        self.profile_velocity_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value(
-                "profile_velocity", None if int(value) == 0 else int(value)
-            )
-        )
-        self.profile_acceleration_spin = QSpinBox()
-        self.profile_acceleration_spin.setRange(0, 200)
-        self.profile_acceleration_spin.setSingleStep(2)
-        self.profile_acceleration_spin.setSpecialValueText("bus default")
-        self.profile_acceleration_spin.setToolTip(
-            "Per-servo profile acceleration pushed at run start (0 = leave bus "
-            "default). Lower → softer ramps in/out of each goal position. "
-            "Recommended for slide-video recordings: 10–30."
-        )
-        self.profile_acceleration_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value(
-                "profile_acceleration", None if int(value) == 0 else int(value)
-            )
-        )
-        self.run_label_edit = QLineEdit()
-        self.run_label_edit.setPlaceholderText("optional short label persisted into summary")
-        self.run_label_edit.editingFinished.connect(
-            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
-        )
-        safety_form.addRow("Soft Tick Cap", self.soft_cap_spin)
-        safety_form.addRow("Hard Tick Cap", self.hard_cap_spin)
-        safety_form.addRow("Max Step Ticks / Update", self.step_cap_spin)
-        safety_form.addRow("Warning Current", self.current_warning_spin)
-        safety_form.addRow("Sustained Overcurrent", self.sustained_current_spin)
-        safety_form.addRow("Profile Velocity", self.profile_velocity_spin)
-        safety_form.addRow("Profile Acceleration", self.profile_acceleration_spin)
-        safety_form.addRow("Run Label", self.run_label_edit)
-        safety_card.body_layout.addLayout(safety_form)
-        safety_card.body_layout.addWidget(self.dry_run_check)
-        safety_card.body_layout.addWidget(self.return_to_neutral_check)
-        self.parameter_layout.addWidget(safety_card)
-
-        # 20-second Sci-Fi Spine preset button. Pre-fills every field for
-        # the recommended dry-run-first config. Operator confirms, then
-        # flips dry_run off when they're ready to actually record.
-        presets_card = ExperimentCard(
-            "Presets",
-            "One-click configs for common demo recordings. Always start in dry-run "
-            "to preview the trajectory; flip dry_run off only when you're ready.",
-        )
-        self.sci_fi_preset_button = QPushButton("20s Sci-Fi Spine")
-        self.sci_fi_preset_button.setProperty("variant", "primary")
-        self.sci_fi_preset_button.setToolTip(
-            "Apply the recommended 20-second sci-fi waypoint relay config: "
-            "9 weird waypoints across the workspace, 0.35 cm amplitude, slow "
-            "profile_velocity so the spine doesn't fully settle between commands."
-        )
-        self.sci_fi_preset_button.clicked.connect(self._apply_sci_fi_spine_preset)
-        presets_card.body_layout.addWidget(self.sci_fi_preset_button)
-        self.parameter_layout.addWidget(presets_card)
+        run_mode_card.body_layout.addWidget(self.dry_run_check)
+        run_mode_card.body_layout.addWidget(self.return_to_neutral_check)
+        self.parameter_layout.addWidget(run_mode_card)
 
         preview_card = ExperimentCard(
             "Preview",
-            "Trajectory summary computed from the current pattern + amplitude. "
-            "For sci_fi_waypoint_relay, shows waypoint count, schedule, and "
-            "advisory warnings.",
+            "Waypoint count, duration, pacing, and advisory warnings for the currently "
+            "loaded preset.",
         )
         self.preview_label = QLabel("preview pending")
         self.preview_label.setWordWrap(True)
@@ -5894,12 +5737,38 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         self.parameter_layout.addWidget(preview_card)
 
     def _apply_sci_fi_spine_preset(self) -> None:
-        """One-click apply the recommended 20-second sci-fi spine config.
+        """One-click apply the curated 20-second sci-fi spine config."""
+        self._apply_relay_preset(
+            waypoint_source="preset_weird",
+            auto_select_seed=True,
+            relay_seed=0,
+        )
 
-        Every field is pushed through the controller's set_config_value
-        so the existing GUI sync machinery picks them up on the next
-        refresh. Dry-run defaults ON; the operator must flip it off to
-        actually drive hardware.
+    def _apply_random_weird_preset(self) -> None:
+        """One-click apply a fresh random weird-spine config.
+
+        Uses the seeded maximin source with a new random base seed on each
+        click, so every press traces a different weird path through the
+        workspace. ``auto_select_seed`` still rolls forward from that base to
+        guarantee well-separated waypoints, so a "bad" random draw can never
+        produce a dull or too-tight path.
+        """
+        import random as _random
+
+        self._apply_relay_preset(
+            waypoint_source="seeded_maximin",
+            auto_select_seed=True,
+            relay_seed=int(_random.randint(0, 9_999)),
+        )
+
+    def _apply_relay_preset(
+        self, *, waypoint_source: str, auto_select_seed: bool, relay_seed: int
+    ) -> None:
+        """Push a complete, known-good sci-fi relay config to the controller.
+
+        The tick caps are intentionally NOT set here: the experiment sizes
+        them to the amplitude at setup() so a live run always clears precheck.
+        Dry-run defaults ON; the operator un-checks it to record.
         """
         preset = {
             "pattern": "sci_fi_waypoint_relay",
@@ -5907,71 +5776,37 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             "waypoint_count": 9,
             "amplitude_cm": 0.35,
             "early_switch_fraction": 0.72,
-            "waypoint_source": "preset_weird",
-            "auto_select_seed": True,
-            "relay_seed": 0,
+            "waypoint_source": str(waypoint_source),
+            "auto_select_seed": bool(auto_select_seed),
+            "relay_seed": int(relay_seed),
             "profile_velocity": 45,
             "profile_acceleration": 18,
-            "command_rate_hz": 10.0,
-            "return_to_neutral_at_end": True,
-            # Sensible ramp/hold values for a 20s recording.
-            "ramp_in_s": 1.0,
-            "ramp_out_s": 1.0,
+            "command_rate_hz": 15.0,
             "hold_at_start_s": 1.0,
             "hold_at_end_s": 1.5,
+            "return_to_neutral_at_end": True,
             # Default ON. Operator un-checks when ready to record.
             "dry_run": True,
         }
         for key, value in preset.items():
             self.controller.set_config_value(key, value)
-        # Refresh state immediately so the GUI reflects the new values
-        # without needing the next polling tick.
+        # Refresh immediately so the preview + checkboxes reflect the preset
+        # without waiting for the next polling tick.
         self.controller.refresh()
-
-    def _on_amplitude_changed(self) -> None:
-        value = self.amplitude_combo.currentData()
-        if value is None:
-            return
-        self.controller.set_config_value("amplitude_cm", float(value))
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
         config = TwoSegmentSlowMotionDemoConfig.from_dict(self.controller.config_payload())
-        self._set_combo_value(self.pattern_combo, config.pattern)
-        # Pick the closest preset entry for the amplitude.
-        closest_index = 0
-        closest_delta = abs(SLOW_MOTION_AMPLITUDE_PRESETS_CM[0] - config.amplitude_cm)
-        for index, preset in enumerate(SLOW_MOTION_AMPLITUDE_PRESETS_CM):
-            delta = abs(float(preset) - float(config.amplitude_cm))
-            if delta < closest_delta:
-                closest_delta = delta
-                closest_index = index
-        with QSignalBlocker(self.amplitude_combo):
-            self.amplitude_combo.setCurrentIndex(closest_index)
-        self._set_double(self.cycle_duration_spin, float(config.cycle_duration_s))
-        self._set_spin(self.cycles_spin, int(config.cycles))
-        self._set_double(self.update_rate_spin, float(config.update_rate_hz))
-        self._set_double(self.ramp_in_spin, float(config.ramp_in_s))
-        self._set_double(self.ramp_out_spin, float(config.ramp_out_s))
-        self._set_combo_value(self.coupling_combo, config.coupling)
-        self._set_double(self.top_scale_spin, float(config.top_scale))
-        self._set_double(self.phase_offset_spin, float(config.phase_offset_deg))
-        self._set_spin(self.soft_cap_spin, int(config.max_tick_delta_from_startup))
-        self._set_spin(self.hard_cap_spin, int(config.hard_max_tick_delta_from_startup))
-        self._set_spin(self.step_cap_spin, int(config.max_step_ticks_per_update))
-        self._set_spin(self.current_warning_spin, int(config.current_warning_ma))
-        self._set_spin(self.sustained_current_spin, int(config.sustained_overcurrent_ma))
-        self._set_spin(
-            self.profile_velocity_spin,
-            0 if config.profile_velocity is None else int(config.profile_velocity),
-        )
-        self._set_spin(
-            self.profile_acceleration_spin,
-            0 if config.profile_acceleration is None else int(config.profile_acceleration),
-        )
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
         self._set_checkbox(self.return_to_neutral_check, bool(config.return_to_neutral_at_end))
-        self._set_line_text(self.run_label_edit, str(config.run_label or ""))
+        # Make the run mode impossible to miss: dry-run writes a full bundle
+        # but never moves the robot, which is the #1 "nothing is running"
+        # confusion. The button text states the mode so a preview is never
+        # mistaken for a live run.
+        if bool(config.dry_run):
+            self.run_button.setText("Preview (DRY RUN — robot will NOT move)")
+        else:
+            self.run_button.setText("RUN LIVE — move the robot")
         self._refresh_preview(config=config)
 
     def _refresh_preview(self, *, config: TwoSegmentSlowMotionDemoConfig) -> None:
@@ -5998,7 +5833,6 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         from continuum_robot.demo.sci_fi_waypoint_relay import (
             SciFiRelayConfig,
             build_waypoints,
-            build_relay_schedule,
             speed_advisory,
         )
         relay_cfg = SciFiRelayConfig(
@@ -6014,16 +5848,18 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             command_rate_hz=float(config.command_rate_hz),
         )
         waypoints, resolved_seed = build_waypoints(relay_cfg)
-        schedule = build_relay_schedule(relay_cfg, waypoints=waypoints)
         advisory = speed_advisory(relay_cfg)
+        # The relay streams a dense blended path now, so the bus-write count is
+        # video_duration * command_rate, not one write per waypoint.
+        dense_writes = int(round(float(config.video_duration_s) * float(config.command_rate_hz)))
         warning_text = ""
         if advisory.warnings:
             warning_text = "  WARN: " + "; ".join(advisory.warnings)
         self.preview_label.setText(
-            f"Sci-Fi Waypoint Relay  •  {len(waypoints)} waypoints  •  "
+            f"Sci-Fi Waypoint Relay  •  {len(waypoints)} weird waypoints  •  "
             f"{config.video_duration_s:.1f} s total  •  "
-            f"{advisory.seconds_per_waypoint:.2f} s/waypoint  •  "
-            f"{advisory.estimated_bus_writes} bus writes  •  "
+            f"early-switch {config.early_switch_fraction:.2f} (overlap/flow)  •  "
+            f"~{dense_writes} bus writes @ {config.command_rate_hz:.0f} Hz  •  "
             f"source={config.waypoint_source} seed={resolved_seed}  •  "
             f"speed_class={advisory.speed_class}  •  "
             f"profile vel/accel = {config.profile_velocity}/{config.profile_acceleration}"

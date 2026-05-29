@@ -230,18 +230,25 @@ class TestRelayTrajectory:
         assert points[-1].bottom_x_cm == 0.0
         assert points[-1].bottom_y_cm == 0.0
 
-    def test_point_count_matches_waypoints_plus_holds(self) -> None:
+    def test_schedule_has_one_entry_per_waypoint(self) -> None:
         cfg = SciFiRelayConfig(waypoint_count=9)
-        points, wps, sched, _ = build_relay_trajectory(cfg)
-        # 1 hold_start + N waypoints + 1 hold_end = N + 2
-        assert len(points) == len(wps) + 2
+        _points, wps, sched, _ = build_relay_trajectory(cfg)
+        # The nominal schedule is still one evenly spaced entry per waypoint
+        # (used for the waypoints/preview/CSV artifacts), even though the
+        # streamed trajectory is now densely interpolated between them.
         assert len(sched) == len(wps)
 
-    def test_relay_pattern_uses_far_fewer_points_than_continuous(self) -> None:
-        cfg = SciFiRelayConfig(video_duration_s=20.0, waypoint_count=9)
+    def test_trajectory_is_densely_sampled(self) -> None:
+        cfg = SciFiRelayConfig(video_duration_s=20.0, waypoint_count=9, command_rate_hz=15.0)
         points, _, _, _ = build_relay_trajectory(cfg)
-        # Continuous at 30 Hz over 20 s would be 600 points; sparse relay is 11.
-        assert len(points) < 50
+        # The relay now streams a dense overlapping-blend path (not one write
+        # per waypoint) so early_switch_fraction can actually shape the motion.
+        # ~20 s * 15 Hz body + 2 neutral holds.
+        assert len(points) > 100
+        # Body samples are spaced ~1/command_rate_hz apart.
+        body = [p for p in points if p.phase_label == "pattern"]
+        gaps = [b.elapsed_s - a.elapsed_s for a, b in zip(body, body[1:])]
+        assert gaps and max(gaps) < 0.2
 
     def test_resolved_seed_returned_for_preset(self) -> None:
         cfg = SciFiRelayConfig(waypoint_source=WAYPOINT_SOURCE_PRESET, seed=42)
@@ -267,6 +274,37 @@ class TestRelayTrajectory:
             assert abs(p.bottom_y_cm) <= amp + 1e-9
             assert abs(p.top_x_cm) <= amp + 1e-9
             assert abs(p.top_y_cm) <= amp + 1e-9
+
+    def test_early_switch_fraction_is_built_into_the_path(self) -> None:
+        # early_switch_fraction must actually shape the trajectory (it used to
+        # be metadata-only). At 1.0 the blend settles on every waypoint; lower
+        # values overlap the transitions so the spine rounds the corners and
+        # stays farther from the discrete waypoints.
+        amp = 0.35
+
+        def avg_distance_to_waypoints(esf: float) -> float:
+            cfg = SciFiRelayConfig(
+                video_duration_s=20.0, waypoint_count=9, amplitude_cm=amp,
+                early_switch_fraction=esf, command_rate_hz=15.0,
+            )
+            points, wps, _sched, _ = build_relay_trajectory(cfg)
+            body = [p for p in points if p.phase_label == "pattern"]
+
+            def nearest(w) -> float:
+                target = (w.bottom_x_cm, w.bottom_y_cm, w.top_x_cm, w.top_y_cm)
+                return min(
+                    math.dist((p.bottom_x_cm, p.bottom_y_cm, p.top_x_cm, p.top_y_cm), target)
+                    for p in body
+                )
+
+            return sum(nearest(w) for w in wps) / len(wps)
+
+        settle = avg_distance_to_waypoints(1.0)
+        rounded = avg_distance_to_waypoints(0.5)
+        # esf=1.0 reaches the waypoints essentially exactly...
+        assert settle < 1e-6
+        # ...and a lower fraction visibly rounds them off (never settles).
+        assert rounded > settle + 0.02
 
 
 # ---------------------------------------------------------------------------
@@ -462,15 +500,16 @@ class TestExperimentIntegration:
         experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
         session = _StubSession()
         experiment.setup(session)
-        # Trajectory is sparse: 1 hold_start + 9 waypoints + 1 hold_end.
-        assert len(experiment._trajectory) == 11
+        # Trajectory is now a dense overlapping-blend path (1 hold_start +
+        # many body samples + 1 hold_end), not one write per waypoint.
+        assert len(experiment._trajectory) > 100
         assert len(experiment._relay_waypoints) == 9
         assert len(experiment._relay_schedule) == 9
         experiment.precheck(session)
         experiment.execute(session)
-        # Every relay write produced a trace row and a sample.
-        assert len(experiment._trace) == 11
-        assert len(session.samples) == 11
+        # Every streamed point produced a trace row and a sample.
+        assert len(experiment._trace) == len(experiment._trajectory)
+        assert len(session.samples) == len(experiment._trajectory)
         summary = experiment.summarize(session)
         assert summary["pattern"] == "sci_fi_waypoint_relay"
         assert summary["video_duration_s"] == 20.0

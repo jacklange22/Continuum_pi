@@ -1,36 +1,44 @@
-# Two-segment slow motion demo (presentation only).
+# Two-segment weird sci-fi spine demo (presentation only).
 #
 # This is NOT data collection, NOT closed-loop control, and NOT model
-# validation. It drives the stacked dual-segment robot through a bounded
-# smooth command-space pattern (figure-8, circle, sweep, ...) and records
-# what was commanded + servo telemetry. The bundle is tagged
-# demo_only=True / valid_for_model_training=False on every artifact.
+# validation. It relays the stacked dual-segment robot between weird
+# waypoints across its workspace and records what was commanded + servo
+# telemetry. The bundle is tagged demo_only=True / valid_for_model_training
+# =False on every artifact.
 #
-# Defaults match the recommended first-demo settings (conservative).
-# Walk up the amplitude ladder (0.10 -> 0.25 -> 0.50 -> 0.75 -> 1.00 cm)
-# only after the smaller amplitude completes without overcurrent or
-# unexpected motion.
+# Defaults to the curated 20-second "Sci-Fi Spine" so the GUI loads a
+# known-good, runs-first-try demo with nothing to tune. The GUI's two
+# preset buttons (curated / random) just re-push these values.
 
-pattern: figure8          # figure8 | circle | oval | sweep_x | sweep_y | raster | clover | neutral_pulse | custom_lissajous
-amplitude_cm: 0.25        # 0.10 / 0.25 / 0.50 / 0.75 / 1.00 cm presets
-cycle_duration_s: 45.0    # seconds per pattern cycle (full traverse)
-cycles: 2                 # number of full cycles inside the ramp envelope
-update_rate_hz: 3.0       # bus write rate
-ramp_in_s: 5.0            # smooth amplitude ramp from neutral
-ramp_out_s: 5.0           # smooth amplitude ramp back to neutral
-hold_at_start_s: 1.0      # hold at neutral before the ramp-in starts
-hold_at_end_s: 1.0        # hold at neutral after the ramp-out finishes
+pattern: sci_fi_waypoint_relay
 
-coupling: phase_shifted   # same_direction | opposite_direction | phase_shifted | top_scaled | bottom_only | top_only
-top_scale: 0.5
-phase_offset_deg: 90.0
-lissajous_a: 1.0
-lissajous_b: 2.0
-lissajous_phase_deg: 0.0
-raster_ratio: 3.0
-random_seed: 0
+# --- Sci-fi waypoint relay knobs -------------------------------------------
+video_duration_s: 20.0        # total motion length (excludes the neutral holds)
+waypoint_count: 9             # distinct weird poses the spine relays through
+amplitude_cm: 0.35            # per-axis tip-target bound (kept <= 0.5 for the rig)
+# early_switch_fraction is the look of the demo. It is BUILT INTO the path:
+# each waypoint-to-waypoint transition is a smoothstep, and the next one
+# starts when the current is only this fraction of the way through. 1.0 =
+# settle on every waypoint (mechanical); lower = transitions overlap so the
+# spine rounds the corners and never fully settles (the sci-fi flow).
+early_switch_fraction: 0.72
+waypoint_source: preset_weird # preset_weird (curated) | seeded_maximin (random)
+relay_seed: 0                 # base seed for seeded_maximin
+auto_select_seed: true        # roll forward to a well-separated seed automatically
+command_rate_hz: 15.0         # dense blend sample + bus write rate
 
-# Safety caps -- tighter than collect-pose defaults; raise deliberately.
+# Slow servo profile so the physical motion stays smooth on top of the
+# software blend. The demo restores the bus defaults on finalize.
+profile_velocity: 45
+profile_acceleration: 18
+
+# Neutral holds bracketing the blend.
+hold_at_start_s: 1.0
+hold_at_end_s: 1.5
+
+# Safety caps. The experiment auto-sizes these to the amplitude at setup()
+# for the relay, so a live run always clears precheck; the values below are
+# only a floor / a record of intent.
 max_tick_delta_from_startup: 200
 hard_max_tick_delta_from_startup: 600
 max_step_ticks_per_update: 25
@@ -40,9 +48,9 @@ sustained_overcurrent_sample_count: 3
 top_segment_tendon_routing_compensation: true
 return_to_neutral_at_end: true
 
-# Mode + provenance. dry_run defaults to True so the operator can preview
-# the trajectory and trace bundle without writing the bus. Flip to False
-# for the actual live demo.
+# Mode + provenance. dry_run defaults to True so the operator previews the
+# trajectory and trace bundle without writing the bus. Un-check it in the
+# GUI (or set false here) for the live recording.
 dry_run: true
 allow_servo_only_test_run: false
 tracker_overlay_enabled: false

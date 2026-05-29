@@ -24,19 +24,24 @@ Two waypoint sources:
   consecutive waypoints; if any pair fails, the auto-selector can re-roll
   with the next seed.
 
-The relay scheduler emits one issue time per waypoint at evenly spaced
-intervals derived from ``video_duration_s`` and ``waypoint_count``. The
-``early_switch_fraction`` is recorded as diagnostic metadata — the actual
-"the spine starts the next pose before settling the current one" feel is
-produced by setting ``profile_velocity`` slow enough that the servo is
-still mid-motion when the next goal lands. The scheduler exposes a
-helper to compute the expected per-segment travel time from the
-configured ``profile_velocity`` so the GUI / operator can sanity-check
-whether their settings will actually produce the relay effect.
+``early_switch_fraction`` is the knob that produces the "the spine starts
+the next pose before settling the current one" feel, and it is built into
+the trajectory itself — it does NOT rely on guessing a ``profile_velocity``
+that happens to leave the servo mid-motion. ``build_relay_trajectory``
+densely samples an *overlapping smoothstep blend* through the waypoints:
+each waypoint-to-waypoint transition is a smoothstep, and the next
+transition starts when the current one is only ``early_switch_fraction``
+of the way through. At ``early_switch_fraction == 1.0`` the transitions are
+back-to-back so the spine settles on every waypoint; below 1.0 they overlap
+so the spine rounds the corners and never fully settles — the deterministic
+sci-fi flow. The total motion still spans ``video_duration_s`` regardless of
+the fraction, and every sample is clamped to ``±amplitude_cm`` so the
+amplitude-derived tick budget always bounds the trajectory.
 
-Trace contract: each waypoint write the experiment makes corresponds to
-exactly one entry in the schedule. The demo experiment can therefore log
-"waypoint i sent at t=t_i" rows directly without re-deriving timing.
+``build_relay_schedule`` still returns one evenly spaced issue time per
+waypoint; it is used for the waypoints/preview/CSV artifacts and as a human
+record of nominal waypoint pacing. The dense trajectory is what the demo
+controller actually streams to the bus.
 """
 
 from __future__ import annotations
@@ -63,7 +68,7 @@ DEFAULT_WAYPOINT_COUNT = 9
 DEFAULT_VIDEO_DURATION_S = 20.0
 DEFAULT_EARLY_SWITCH_FRACTION = 0.72
 DEFAULT_AMPLITUDE_CM = 0.35
-DEFAULT_COMMAND_RATE_HZ = 10.0
+DEFAULT_COMMAND_RATE_HZ = 15.0  # dense blend sample + bus write rate
 DEFAULT_MIN_WAYPOINT_SEPARATION_NORM = 0.40  # in units of amplitude_cm
 DEFAULT_MAX_WAYPOINT_SEPARATION_NORM = 2.20  # √8 ≈ 2.83 is theoretical max
 DEFAULT_PROFILE_VELOCITY = 45  # XC330 units = 0.229 rpm/unit → ~10 rpm
@@ -511,8 +516,9 @@ def speed_advisory(config: SciFiRelayConfig) -> SciFiSpeedAdvisory:
     if not (0.4 <= config.early_switch_fraction <= 0.9):
         warnings.append(
             f"early_switch_fraction={config.early_switch_fraction:.2f} is outside the "
-            "typical 0.4–0.9 range. This is a metadata-only field (relay timing is set by "
-            "video_duration_s / waypoint_count), but the operator should know."
+            "typical 0.4–0.9 range. It controls how much consecutive waypoint transitions "
+            "overlap: 1.0 settles on every waypoint (mechanical), very low values smear the "
+            "whole path into one blur. 0.6–0.8 reads best as a sci-fi flow on camera."
         )
     return SciFiSpeedAdvisory(
         speed_class=speed_class,
@@ -536,6 +542,74 @@ def _norm4(a: tuple[float, float, float, float], b: tuple[float, float, float, f
     )
 
 
+def _smoothstep(t: float) -> float:
+    """Standard smoothstep easing 3t² − 2t³, clamped to [0, 1].
+
+    Zero velocity at both ends, so blended transitions accelerate out of and
+    decelerate into each waypoint instead of snapping.
+    """
+    t = max(0.0, min(1.0, float(t)))
+    return float(t * t * (3.0 - 2.0 * t))
+
+
+def relay_blend_positions(
+    key_poses: Sequence[tuple[float, float, float, float]],
+    *,
+    body_duration_s: float,
+    early_switch_fraction: float,
+    sample_rate_hz: float,
+    amplitude_cm: float,
+) -> list[tuple[float, float, float, float, float]]:
+    """Dense overlapping-smoothstep blend through ``key_poses``.
+
+    Returns ``(elapsed_s, bottom_x, bottom_y, top_x, top_y)`` samples covering
+    ``[0, body_duration_s]`` at ``sample_rate_hz``. The position is the
+    additive sum of per-transition smoothsteps:
+
+        pos(t) = K₀ + Σⱼ (Kⱼ₊₁ − Kⱼ)·smoothstep((t − j·stride) / T)
+
+    where ``T`` is the per-transition duration and ``stride = esf·T`` is how
+    long after one transition starts the next one begins. ``esf`` (the
+    ``early_switch_fraction``) is therefore *built into* the path:
+
+    * ``esf == 1.0`` → ``stride == T`` → transitions are back-to-back, the
+      spine reaches every key pose exactly (mechanical relay).
+    * ``esf < 1.0``  → transitions overlap → the spine rounds the corners and
+      never fully settles (the sci-fi flow). Lower ``esf`` → more overlap.
+
+    ``T`` is chosen so the last transition always ends at ``body_duration_s``
+    regardless of ``esf``, so the demo length is stable. Every sample is
+    clamped to ``±amplitude_cm`` so the amplitude-derived tick budget bounds
+    the trajectory even where overlapping transitions would otherwise add up.
+    """
+    n_poses = len(key_poses)
+    transitions = max(1, n_poses - 1)
+    esf = max(0.01, min(1.0, float(early_switch_fraction)))
+    body = max(0.0, float(body_duration_s))
+    # last transition ends at (M−1)·stride + T = body, with stride = esf·T
+    #   ⇒ T = body / (1 + (M−1)·esf)
+    t_trans = body / (1.0 + (transitions - 1) * esf) if body > 0.0 else 0.0
+    stride = esf * t_trans
+    dt = 1.0 / max(0.5, float(sample_rate_hz))
+    sample_count = max(1, int(round(body / dt))) if body > 0.0 else 1
+    amp = abs(float(amplitude_cm))
+
+    samples: list[tuple[float, float, float, float, float]] = []
+    for k in range(sample_count + 1):
+        t = min(body, k * dt)
+        pos = [float(key_poses[0][a]) for a in range(4)]
+        for j in range(transitions):
+            s = _smoothstep((t - j * stride) / t_trans) if t_trans > 0.0 else 1.0
+            for a in range(4):
+                pos[a] += (float(key_poses[j + 1][a]) - float(key_poses[j][a])) * s
+        if amp > 0.0:
+            pos = [max(-amp, min(amp, v)) for v in pos]
+        samples.append((t, pos[0], pos[1], pos[2], pos[3]))
+        if t >= body:
+            break
+    return samples
+
+
 # ---------------------------------------------------------------------------
 # Trajectory builder — emits sparse TwoSegmentPatternPoint values for the demo
 # ---------------------------------------------------------------------------
@@ -547,20 +621,23 @@ def build_relay_trajectory(
     hold_at_start_s: float = 1.0,
     hold_at_end_s: float = 1.5,
 ):
-    """Build the sparse waypoint-time trajectory + schedule for the demo.
+    """Build the dense blended trajectory + schedule for the demo.
 
     Returns ``(points, waypoints, schedule, resolved_seed)``:
 
-    * ``points`` is a ``list[TwoSegmentPatternPoint]`` with one neutral
-      point at ``t=0`` (hold_start), one point per scheduled waypoint at
-      ``t = hold_at_start_s + issue_time_s``, and one neutral point at
-      ``t = hold_at_start_s + video_duration_s + hold_at_end_s``. The
-      demo's existing execute() loop sleeps the difference between
-      consecutive ``elapsed_s`` values, so this gives the operator a
-      "settle at neutral → relay waypoints → return to neutral" run.
+    * ``points`` is a ``list[TwoSegmentPatternPoint]`` sampled at
+      ``config.command_rate_hz`` along an overlapping-smoothstep blend
+      through ``neutral → waypoint₀ → … → waypointₙ₋₁ → neutral`` (see
+      :func:`relay_blend_positions`). The blend is bracketed by a neutral
+      hold at ``t=0`` (length ``hold_at_start_s``) and a neutral hold at the
+      end (length ``hold_at_end_s``). ``early_switch_fraction`` is baked into
+      the blend, so the "almost reaching / changing its mind" motion is
+      deterministic instead of depending on a lucky ``profile_velocity``.
+      The demo's execute() loop sleeps the difference between consecutive
+      ``elapsed_s`` values, so streaming these points reproduces the timing.
     * ``waypoints`` is the resolved waypoint list (preset or seeded).
-    * ``schedule`` is the relay schedule (issue_time_s relative to the
-      pattern body, i.e. NOT shifted by hold_at_start_s).
+    * ``schedule`` is the nominal relay schedule (one evenly spaced issue
+      time per waypoint), kept for the waypoints/preview/CSV artifacts.
     * ``resolved_seed`` is the seed actually used after auto_select_seed
       runs (always equal to ``config.seed`` for the preset source).
 
@@ -578,6 +655,27 @@ def build_relay_trajectory(
     waypoints, resolved_seed = build_waypoints(config)
     schedule = build_relay_schedule(config, waypoints=waypoints)
 
+    # Key poses: neutral → each waypoint → neutral. Bracketing the waypoints
+    # with neutral makes the blend start and end at neutral (so the hold
+    # windows are pure dwell) and gives a smooth ease out of / back into
+    # neutral without a separate ramp stage.
+    key_poses: list[tuple[float, float, float, float]] = [(0.0, 0.0, 0.0, 0.0)]
+    key_poses.extend(
+        (float(w.bottom_x_cm), float(w.bottom_y_cm), float(w.top_x_cm), float(w.top_y_cm))
+        for w in waypoints
+    )
+    key_poses.append((0.0, 0.0, 0.0, 0.0))
+
+    blend = relay_blend_positions(
+        key_poses,
+        body_duration_s=float(config.video_duration_s),
+        early_switch_fraction=float(config.early_switch_fraction),
+        sample_rate_hz=float(config.command_rate_hz),
+        amplitude_cm=float(config.amplitude_cm),
+    )
+
+    total_duration_s = float(hold_at_start_s) + float(config.video_duration_s) + float(hold_at_end_s)
+
     def _pattern_point(
         *,
         sample_index: int,
@@ -585,7 +683,6 @@ def build_relay_trajectory(
         phase_label: str,
         bottom_xy: tuple[float, float],
         top_xy: tuple[float, float],
-        total_duration_s: float,
     ) -> "TwoSegmentPatternPoint":
         bottom_tendon = expand_pair_to_tendon_cm(bottom_xy[0], bottom_xy[1])
         top_tendon = expand_pair_to_tendon_cm(top_xy[0], top_xy[1])
@@ -612,11 +709,10 @@ def build_relay_trajectory(
             all_8_tendon_cm=all_8,
         )
 
-    total_duration_s = float(hold_at_start_s) + float(config.video_duration_s) + float(hold_at_end_s)
     points: list = []
     sample_index = 0
 
-    # 1) Hold at neutral.
+    # 1) Hold at neutral before the blend starts.
     if hold_at_start_s > 0.0:
         points.append(
             _pattern_point(
@@ -625,39 +721,31 @@ def build_relay_trajectory(
                 phase_label=PHASE_HOLD_START,
                 bottom_xy=(0.0, 0.0),
                 top_xy=(0.0, 0.0),
-                total_duration_s=total_duration_s,
             )
         )
         sample_index += 1
 
-    # 2) Each relay waypoint at its scheduled offset, shifted by hold_at_start_s.
-    for entry in schedule:
-        elapsed_s = float(hold_at_start_s) + float(entry.issue_time_s)
-        wp = entry.waypoint
+    # 2) Dense blend body, shifted by hold_at_start_s.
+    for (t, bx, by, tx, ty) in blend:
         points.append(
             _pattern_point(
                 sample_index=sample_index,
-                elapsed_s=elapsed_s,
+                elapsed_s=float(hold_at_start_s) + float(t),
                 phase_label=PHASE_PATTERN,
-                bottom_xy=(wp.bottom_x_cm, wp.bottom_y_cm),
-                top_xy=(wp.top_x_cm, wp.top_y_cm),
-                total_duration_s=total_duration_s,
+                bottom_xy=(bx, by),
+                top_xy=(tx, ty),
             )
         )
         sample_index += 1
 
-    # 3) Return to neutral at end (this is the final write that triggers
-    #    the spine to settle back to startup after the relay finishes).
-    if hold_at_end_s > 0.0 or not points or points[-1].bottom_x_cm != 0.0:
-        end_elapsed = total_duration_s
-        points.append(
-            _pattern_point(
-                sample_index=sample_index,
-                elapsed_s=end_elapsed,
-                phase_label=PHASE_HOLD_END,
-                bottom_xy=(0.0, 0.0),
-                top_xy=(0.0, 0.0),
-                total_duration_s=total_duration_s,
-            )
+    # 3) Final neutral hold so the spine settles back to startup.
+    points.append(
+        _pattern_point(
+            sample_index=sample_index,
+            elapsed_s=total_duration_s,
+            phase_label=PHASE_HOLD_END,
+            bottom_xy=(0.0, 0.0),
+            top_xy=(0.0, 0.0),
         )
+    )
     return points, waypoints, schedule, int(resolved_seed)
