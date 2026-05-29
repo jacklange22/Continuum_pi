@@ -260,11 +260,14 @@ def test_demo_gui_page_exposes_map_controls_and_unknown_assembly_flag(tmp_path: 
         page._sync_parameters_from_state(ExperimentViewState())
         # Default config: servo_only-derived (unknown-assembly) maps are usable.
         assert page.allow_unknown_assembly_check.isChecked() is True
-        # No maps present yet -> the button reports none found, leaves path empty.
+        # The bundled demo map is wired as the default so the page works on open.
+        assert "demo/maps" in page.map_path_edit.text().replace("\\", "/")
+        # No *built* maps under data/experiments yet -> the scan button reports
+        # none found and leaves the bundled default in place.
         page._on_use_latest_map()
         assert "No built maps" in page.map_status_label.text()
-        assert page.map_path_edit.text().strip() == ""
-        # Drop a map artifact in the expected layout and re-scan.
+        assert "demo/maps" in page.map_path_edit.text().replace("\\", "/")
+        # Drop a freshly-built map artifact and re-scan -> path switches to it.
         maps_dir = (
             tmp_path
             / "data"
@@ -275,7 +278,7 @@ def test_demo_gui_page_exposes_map_controls_and_unknown_assembly_flag(tmp_path: 
         maps_dir.mkdir(parents=True)
         (maps_dir / "two_segment_workspace_lookup_map.json").write_text("{}", encoding="utf-8")
         page._on_use_latest_map()
-        assert page.map_path_edit.text().endswith("two_segment_workspace_lookup_map.json")
+        assert "two_segment_workspace_lookup_maps" in page.map_path_edit.text().replace("\\", "/")
         assert "Loaded latest map" in page.map_status_label.text()
     finally:
         page.deleteLater()
@@ -347,9 +350,14 @@ def test_demo_marks_itself_demo_only_in_summary_json_and_run_validity(tmp_path: 
     assert metrics["physical_tip_chasing"] is False
 
 
-def test_demo_refuses_to_run_without_map_path(tmp_path: Path) -> None:
+def test_demo_refuses_to_run_with_explicitly_empty_map_path(tmp_path: Path) -> None:
+    """An explicitly-cleared map_path still refuses to run.
+
+    The bundled default only applies when the key is ABSENT; clearing it to ""
+    is an intentional operator action and must not silently fall back.
+    """
     runner = _runner_with_penprobe(tmp_path)
-    result = runner.run_experiment(EXPERIMENT_NAME, config={})
+    result = runner.run_experiment(EXPERIMENT_NAME, config={"map_path": ""})
     assert result.success is False
     assert "map_path" in result.message
 
@@ -367,6 +375,52 @@ def test_demo_default_config_uses_target_0b_and_tip_0a() -> None:
     assert config.tip_tracking_optional is True
     assert config.require_target_tool is True
     assert config.block_on_map_tool_mismatch is True
+
+
+def test_demo_uses_bundled_default_map_when_none_specified(tmp_path: Path) -> None:
+    """Opening the demo with no map_path loads the bundled tracked map.
+
+    Guarantees the GUI "open page -> Run" path works on a fresh checkout: the
+    config default points at the bundled map that ships in git, so the spine
+    chases the nearest reachable point to the penprobe with zero manual setup.
+    """
+    from continuum_robot.experiments.two_segment_penprobe_lookup_demo import (
+        DEFAULT_BUNDLED_MAP_PATH,
+        TwoSegmentPenprobeLookupDemoConfig,
+    )
+
+    import shutil
+
+    # The default is wired and the map file actually ships in the repo.
+    config = TwoSegmentPenprobeLookupDemoConfig.from_dict({})
+    assert config.map_path == DEFAULT_BUNDLED_MAP_PATH
+    repo_root = Path(__file__).resolve().parents[1]
+    bundled = repo_root / DEFAULT_BUNDLED_MAP_PATH
+    assert bundled.exists(), "bundled demo map must be committed to git"
+
+    # The runner uses project_root=tmp_path, so stage the *real* committed map
+    # under tmp at the same relative path. This exercises the exact default-path
+    # resolution the real GUI uses (project_root=repo) end to end.
+    staged = tmp_path / DEFAULT_BUNDLED_MAP_PATH
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(bundled, staged)
+
+    # Run the demo with NO map_path -> the bundled default resolves, loads, runs.
+    runner = _runner_with_penprobe(tmp_path)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "max_iterations": 2,
+            "max_duration_s": 3.0,
+            "control_rate_hz": 5.0,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    assert result.success is True, result.message
+    metrics = result.summary.experiment_metrics
+    # The bundled 2493-point servo_only-derived map is the one that loaded.
+    assert metrics["map_metadata"]["map_point_count"] == 2493
+    assert metrics["map_assembly_unknown"] is True
 
 
 def test_demo_blocks_when_map_distal_tool_explicitly_differs(tmp_path: Path) -> None:

@@ -53,6 +53,13 @@ BLOCK_MESSAGE = (
     "an accepted all-8 startup, and a loaded workspace lookup map whose servo IDs + "
     "bottom/top assignment match the current runtime."
 )
+# Bundled demo default map (project-root-relative, tracked in git so the demo
+# works on a fresh checkout). Built from the big 20260526_235950 servo_only
+# dataset (2493 points). The demo loads this automatically when no map_path is
+# given, so opening the page and hitting Run chases the nearest reachable point
+# to the live penprobe with no manual setup. Override via the GUI map picker or
+# `map_path` to use a freshly-built map.
+DEFAULT_BUNDLED_MAP_PATH = "continuum_robot/demo/maps/two_segment_workspace_lookup_map.json"
 
 
 @dataclass
@@ -73,7 +80,7 @@ class TwoSegmentPenprobeLookupDemoConfig:
       accordingly.
     """
 
-    map_path: str = ""
+    map_path: str = DEFAULT_BUNDLED_MAP_PATH
     target_tool_id: str = "0B"
     target_tool_role: str = "penprobe_target"
     tip_tool_id: str = "0A"
@@ -123,7 +130,7 @@ class TwoSegmentPenprobeLookupDemoConfig:
         if interp not in {"nearest", "inverse_distance"}:
             interp = "nearest"
         return cls(
-            map_path=str(payload.get("map_path", "") or ""),
+            map_path=str(payload.get("map_path", DEFAULT_BUNDLED_MAP_PATH) or ""),
             target_tool_id=str(payload.get("target_tool_id", "0B") or "0B").upper(),
             target_tool_role=str(payload.get("target_tool_role", "penprobe_target") or "penprobe_target"),
             tip_tool_id=str(payload.get("tip_tool_id", "0A") or "0A").upper(),
