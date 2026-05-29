@@ -98,9 +98,10 @@ DEFAULT_MAX_STEP_TICKS_PER_UPDATE = 25
 # write at the demo's command rate -- doing so was the cause of the laggy /
 # jumpy motion. We decimate to ~this interval so the hot path is just a fast
 # sync goal write, while still sampling current often enough to fail-closed
-# on sustained overcurrent. Patterns slower than this (e.g. a 3-5 Hz figure-8)
-# still read every tick, so their behaviour is unchanged.
-DEMO_TELEMETRY_INTERVAL_S = 0.2
+# on sustained overcurrent. 0.3 s (~3 Hz) keeps the periodic read from
+# hitching the otherwise-continuous motion. Patterns slower than this (e.g. a
+# 3 Hz figure-8) still read every tick, so their behaviour is unchanged.
+DEMO_TELEMETRY_INTERVAL_S = 0.3
 
 
 def _optional_non_negative_int(payload: dict[str, Any], key: str) -> int | None:

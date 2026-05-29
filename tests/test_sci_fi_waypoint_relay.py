@@ -656,11 +656,12 @@ def test_gui_preset_sets_relay_pattern_and_amplitude(monkeypatch) -> None:
     controller.settings.runtime.visualization_safe_effects = True
     page = TwoSegmentSlowMotionDemoPage(controller, "two_segment_slow_motion_demo")
     page._apply_sci_fi_spine_preset()
-    # The preset should have called set_config_value with the relay
-    # pattern + 0.35 cm amplitude + 9 waypoints.
+    # The preset should have called set_config_value with the relay pattern,
+    # the bigger 0.5 cm amplitude, 18 waypoints, and live (dry-run off) mode.
     pushed = {call.args[0]: call.args[1] for call in controller.set_config_value.call_args_list}
     assert pushed.get("pattern") == "sci_fi_waypoint_relay"
-    assert pushed.get("video_duration_s") == 20.0
-    assert pushed.get("waypoint_count") == 9
-    assert pushed.get("amplitude_cm") == 0.35
-    assert pushed.get("dry_run") is True
+    assert pushed.get("video_duration_s") == 14.0
+    assert pushed.get("waypoint_count") == 18
+    assert pushed.get("amplitude_cm") == 0.5
+    assert pushed.get("dry_run") is False
+    assert pushed.get("hard_max_tick_delta_from_startup") == 1000
