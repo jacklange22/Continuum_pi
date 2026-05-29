@@ -49,7 +49,7 @@ def compute_workspace_repeatability_metrics(
     visit_results: Sequence[Any],
     targets: Sequence[Any],
 ) -> list[dict[str, Any]]:
-    """Per-target distal-XYZ scatter stats for the workspace repeatability run.
+    """Per-target measured-space scatter stats for the workspace repeatability run.
 
     Accepts both the experiment's ``_VisitResult`` dataclass instances and
     plain dicts (so tests can feed synthetic rows). Drops rejected captures
@@ -60,8 +60,8 @@ def compute_workspace_repeatability_metrics(
     for visit in visit_dicts:
         if not bool(visit.get("accepted") or visit.get("capture_accepted")):
             continue
-        xyz = visit.get("distal_xyz_robot_mm")
-        if not isinstance(xyz, list) or len(xyz) < 3:
+        xyz = _xyz_array(visit.get("distal_xyz_robot_mm") or visit.get("position_mm"))
+        if xyz is None:
             continue
         target_idx = int(visit.get("target_index"))
         accepted_by_target.setdefault(target_idx, []).append(visit)
@@ -72,70 +72,377 @@ def compute_workspace_repeatability_metrics(
     for target_index, target_dict in sorted(targets_by_index.items()):
         visits = accepted_by_target.get(target_index, [])
         n = len(visits)
+        base_row = _target_base_row(target_index=target_index, target_dict=target_dict)
         if n == 0:
-            rows.append(
-                {
-                    "target_index": int(target_index),
-                    "target_id": str(target_dict.get("target_id", f"WS_{target_index:04d}")),
-                    "group_tag": str(target_dict.get("group_tag", "")),
-                    "amplitude_cm": float(target_dict.get("amplitude_cm") or 0.0),
-                    "bottom_x_cm": float(target_dict.get("bottom_x_cm") or 0.0),
-                    "bottom_y_cm": float(target_dict.get("bottom_y_cm") or 0.0),
-                    "top_x_cm": float(target_dict.get("top_x_cm") or 0.0),
-                    "top_y_cm": float(target_dict.get("top_y_cm") or 0.0),
-                    "accepted_repeats": 0,
-                    "centroid_xyz_mm": None,
-                    "rms_spread_mm": None,
-                    "mean_radial_mm": None,
-                    "median_radial_mm": None,
-                    "max_radial_mm": None,
-                    "std_x_mm": None,
-                    "std_y_mm": None,
-                    "std_z_mm": None,
-                    "target_amplitude_mm": float(target_dict.get("amplitude_cm") or 0.0) * 10.0,
-                    "x_mm": float(target_dict.get("bottom_x_cm") or 0.0) * 10.0,
-                    "y_mm": float(target_dict.get("bottom_y_cm") or 0.0) * 10.0,
-                }
-            )
+            base_row.update(_empty_distal_stats())
+            rows.append(base_row)
             continue
-        positions = np.asarray(
-            [[float(v) for v in visit["distal_xyz_robot_mm"][:3]] for visit in visits], dtype=float
+        distal_positions = _visit_xyz_matrix(visits, key="distal_xyz_robot_mm", fallback_key="position_mm")
+        base_row.update(_position_stats(distal_positions, prefix=""))
+
+        intermediate_positions = _visit_xyz_matrix(visits, key="intermediate_xyz_robot_mm")
+        base_row.update(_position_stats(intermediate_positions, prefix="proximal_"))
+
+        paired_relative_positions = _paired_relative_xyz_matrix(
+            visits,
+            distal_key="distal_xyz_robot_mm",
+            proximal_key="intermediate_xyz_robot_mm",
         )
-        centroid = positions.mean(axis=0)
-        deltas = positions - centroid
-        radial = np.linalg.norm(deltas, axis=1)
-        rms_spread = float(np.sqrt(np.mean(radial ** 2)))
-        std = positions.std(axis=0)
-        rows.append(
-            {
-                "target_index": int(target_index),
-                "target_id": str(target_dict.get("target_id", f"WS_{target_index:04d}")),
-                "group_tag": str(target_dict.get("group_tag", "")),
-                "amplitude_cm": float(target_dict.get("amplitude_cm") or 0.0),
-                "bottom_x_cm": float(target_dict.get("bottom_x_cm") or 0.0),
-                "bottom_y_cm": float(target_dict.get("bottom_y_cm") or 0.0),
-                "top_x_cm": float(target_dict.get("top_x_cm") or 0.0),
-                "top_y_cm": float(target_dict.get("top_y_cm") or 0.0),
-                "accepted_repeats": int(n),
-                "centroid_xyz_mm": [float(c) for c in centroid.tolist()],
-                "rms_spread_mm": rms_spread,
-                "mean_radial_mm": float(np.mean(radial)),
-                "median_radial_mm": float(np.median(radial)),
-                "max_radial_mm": float(np.max(radial)),
-                "std_x_mm": float(std[0]),
-                "std_y_mm": float(std[1]),
-                "std_z_mm": float(std[2]),
-                "target_amplitude_mm": float(target_dict.get("amplitude_cm") or 0.0) * 10.0,
-                # 2D map projection (commanded bottom XY in mm). For the
-                # workspace-RMS-map figure we plot the per-target points in
-                # commanded bottom XY since that's the most operator-readable
-                # workspace projection; the top dimensions are encoded via
-                # the colour scale through `target_amplitude_mm`.
-                "x_mm": float(target_dict.get("bottom_x_cm") or 0.0) * 10.0,
-                "y_mm": float(target_dict.get("bottom_y_cm") or 0.0) * 10.0,
-            }
-        )
+        base_row.update(_position_stats(paired_relative_positions, prefix="distal_relative_"))
+        rows.append(base_row)
+    _attach_measured_workspace_fields(rows)
     return rows
+
+
+def _target_base_row(*, target_index: int, target_dict: Mapping[str, Any]) -> dict[str, Any]:
+    bottom_x = float(target_dict.get("bottom_x_cm") or 0.0)
+    bottom_y = float(target_dict.get("bottom_y_cm") or 0.0)
+    top_x = float(target_dict.get("top_x_cm") or 0.0)
+    top_y = float(target_dict.get("top_y_cm") or 0.0)
+    proximal_command_norm_cm = float(math.hypot(bottom_x, bottom_y))
+    distal_command_norm_cm = float(math.hypot(top_x, top_y))
+    command_l2_cm = float(math.sqrt(bottom_x ** 2 + bottom_y ** 2 + top_x ** 2 + top_y ** 2))
+    return {
+        "target_index": int(target_index),
+        "target_id": str(target_dict.get("target_id", f"WS_{target_index:04d}")),
+        "group_tag": str(target_dict.get("group_tag", "")),
+        "amplitude_cm": float(target_dict.get("amplitude_cm") or command_l2_cm),
+        "bottom_x_cm": bottom_x,
+        "bottom_y_cm": bottom_y,
+        "top_x_cm": top_x,
+        "top_y_cm": top_y,
+        "proximal_command_norm_cm": proximal_command_norm_cm,
+        "distal_command_norm_cm": distal_command_norm_cm,
+        "command_l2_cm": command_l2_cm,
+        "target_amplitude_mm": float(target_dict.get("amplitude_cm") or command_l2_cm) * 10.0,
+        # Backward-compatible workspace-map columns. Older consumers read
+        # x_mm/y_mm as the map coordinates. They now represent measured
+        # distal-tip displacement and are filled by _attach_measured_workspace_fields.
+        "x_mm": None,
+        "y_mm": None,
+    }
+
+
+def _empty_distal_stats() -> dict[str, Any]:
+    return {
+        "accepted_repeats": 0,
+        "centroid_xyz_mm": None,
+        "rms_spread_mm": None,
+        "mean_radial_mm": None,
+        "median_radial_mm": None,
+        "max_radial_mm": None,
+        "std_x_mm": None,
+        "std_y_mm": None,
+        "std_z_mm": None,
+        "proximal_accepted_repeats": 0,
+        "proximal_centroid_xyz_mm": None,
+        "proximal_rms_spread_mm": None,
+        "proximal_mean_radial_mm": None,
+        "proximal_median_radial_mm": None,
+        "proximal_max_radial_mm": None,
+        "proximal_std_x_mm": None,
+        "proximal_std_y_mm": None,
+        "proximal_std_z_mm": None,
+        "distal_relative_accepted_repeats": 0,
+        "distal_relative_centroid_xyz_mm": None,
+        "distal_relative_rms_spread_mm": None,
+        "distal_relative_mean_radial_mm": None,
+        "distal_relative_median_radial_mm": None,
+        "distal_relative_max_radial_mm": None,
+        "distal_relative_std_x_mm": None,
+        "distal_relative_std_y_mm": None,
+        "distal_relative_std_z_mm": None,
+    }
+
+
+def _position_stats(positions: np.ndarray | None, *, prefix: str) -> dict[str, Any]:
+    if positions is None or positions.size == 0:
+        accepted_key = f"{prefix}accepted_repeats" if prefix else "accepted_repeats"
+        centroid_key = f"{prefix}centroid_xyz_mm" if prefix else "centroid_xyz_mm"
+        rms_key = f"{prefix}rms_spread_mm" if prefix else "rms_spread_mm"
+        mean_key = f"{prefix}mean_radial_mm" if prefix else "mean_radial_mm"
+        median_key = f"{prefix}median_radial_mm" if prefix else "median_radial_mm"
+        max_key = f"{prefix}max_radial_mm" if prefix else "max_radial_mm"
+        return {
+            accepted_key: 0,
+            centroid_key: None,
+            rms_key: None,
+            mean_key: None,
+            median_key: None,
+            max_key: None,
+            f"{prefix}std_x_mm" if prefix else "std_x_mm": None,
+            f"{prefix}std_y_mm" if prefix else "std_y_mm": None,
+            f"{prefix}std_z_mm" if prefix else "std_z_mm": None,
+        }
+    centroid = positions.mean(axis=0)
+    deltas = positions - centroid
+    radial = np.linalg.norm(deltas, axis=1)
+    rms_spread = float(np.sqrt(np.mean(radial ** 2)))
+    std = positions.std(axis=0)
+    accepted_key = f"{prefix}accepted_repeats" if prefix else "accepted_repeats"
+    centroid_key = f"{prefix}centroid_xyz_mm" if prefix else "centroid_xyz_mm"
+    rms_key = f"{prefix}rms_spread_mm" if prefix else "rms_spread_mm"
+    mean_key = f"{prefix}mean_radial_mm" if prefix else "mean_radial_mm"
+    median_key = f"{prefix}median_radial_mm" if prefix else "median_radial_mm"
+    max_key = f"{prefix}max_radial_mm" if prefix else "max_radial_mm"
+    return {
+        accepted_key: int(positions.shape[0]),
+        centroid_key: [float(c) for c in centroid.tolist()],
+        rms_key: rms_spread,
+        mean_key: float(np.mean(radial)),
+        median_key: float(np.median(radial)),
+        max_key: float(np.max(radial)),
+        f"{prefix}std_x_mm" if prefix else "std_x_mm": float(std[0]),
+        f"{prefix}std_y_mm" if prefix else "std_y_mm": float(std[1]),
+        f"{prefix}std_z_mm" if prefix else "std_z_mm": float(std[2]),
+    }
+
+
+def _visit_xyz_matrix(
+    visits: Sequence[Mapping[str, Any]],
+    *,
+    key: str,
+    fallback_key: str | None = None,
+) -> np.ndarray | None:
+    values: list[np.ndarray] = []
+    for visit in visits:
+        xyz = _xyz_array(visit.get(key))
+        if xyz is None and fallback_key:
+            xyz = _xyz_array(visit.get(fallback_key))
+        if xyz is not None:
+            values.append(xyz)
+    if not values:
+        return None
+    return np.vstack(values).astype(float)
+
+
+def _paired_relative_xyz_matrix(
+    visits: Sequence[Mapping[str, Any]],
+    *,
+    distal_key: str,
+    proximal_key: str,
+) -> np.ndarray | None:
+    values: list[np.ndarray] = []
+    for visit in visits:
+        distal = _xyz_array(visit.get(distal_key) or visit.get("position_mm"))
+        proximal = _xyz_array(visit.get(proximal_key))
+        if distal is not None and proximal is not None:
+            values.append(distal - proximal)
+    if not values:
+        return None
+    return np.vstack(values).astype(float)
+
+
+def _attach_measured_workspace_fields(rows: list[dict[str, Any]]) -> None:
+    """Add real-space displacement fields and segment contribution estimates.
+
+    The plots should show measured robot-space motion, not commanded tendon
+    coordinates. When an intermediate/proximal tracker marker exists we record
+    direct proximal and distal-relative displacement fields. When it is absent
+    (common in older runs), we still separate the measured distal-tip workspace
+    into proximal-command and distal-command contributions with a least-squares
+    fit from the measured centroids.
+    """
+    for row in rows:
+        _set_default_measured_fields(row)
+
+    data_indices = [idx for idx, row in enumerate(rows) if _xyz_array(row.get("centroid_xyz_mm")) is not None]
+    if not data_indices:
+        return
+
+    command = np.asarray(
+        [
+            [
+                float(rows[idx].get("bottom_x_cm") or 0.0),
+                float(rows[idx].get("bottom_y_cm") or 0.0),
+                float(rows[idx].get("top_x_cm") or 0.0),
+                float(rows[idx].get("top_y_cm") or 0.0),
+            ]
+            for idx in data_indices
+        ],
+        dtype=float,
+    )
+    centroids = np.asarray([_xyz_array(rows[idx].get("centroid_xyz_mm")) for idx in data_indices], dtype=float)
+    reference_xyz, reference_method = _measured_zero_reference(
+        rows=rows,
+        data_indices=data_indices,
+        centroids=centroids,
+        command=command,
+    )
+    coeffs, fit_rank = _least_squares_workspace_coefficients(command=command, centroids=centroids)
+    segment_method = (
+        "direct_intermediate_marker"
+        if any(_xyz_array(row.get("proximal_centroid_xyz_mm")) is not None for row in rows)
+        else "least_squares_distal_tip_decomposition"
+    )
+
+    for row in rows:
+        row["measured_tip_reference_xyz_mm"] = _array_to_xyz_list(reference_xyz)
+        row["measured_displacement_reference_method"] = reference_method
+        row["segment_separation_method"] = segment_method
+        row["workspace_fit_rank"] = int(fit_rank)
+        centroid = _xyz_array(row.get("centroid_xyz_mm"))
+        command_vec = np.asarray(
+            [
+                float(row.get("bottom_x_cm") or 0.0),
+                float(row.get("bottom_y_cm") or 0.0),
+                float(row.get("top_x_cm") or 0.0),
+                float(row.get("top_y_cm") or 0.0),
+            ],
+            dtype=float,
+        )
+        proximal_est = command_vec[0] * coeffs[1] + command_vec[1] * coeffs[2]
+        distal_est = command_vec[2] * coeffs[3] + command_vec[3] * coeffs[4]
+        row["proximal_estimated_displacement_xyz_mm"] = _array_to_xyz_list(proximal_est)
+        row["proximal_estimated_displacement_norm_mm"] = float(np.linalg.norm(proximal_est))
+        row["distal_estimated_displacement_xyz_mm"] = _array_to_xyz_list(distal_est)
+        row["distal_estimated_displacement_norm_mm"] = float(np.linalg.norm(distal_est))
+        if centroid is None:
+            continue
+        measured_displacement = centroid - reference_xyz
+        row["measured_tip_displacement_xyz_mm"] = _array_to_xyz_list(measured_displacement)
+        row["measured_tip_displacement_norm_mm"] = float(np.linalg.norm(measured_displacement))
+        row["measured_tip_displacement_xy_mm"] = float(np.linalg.norm(measured_displacement[:2]))
+        row["x_mm"] = float(measured_displacement[0])
+        row["y_mm"] = float(measured_displacement[1])
+        fit_prediction = coeffs[0] + proximal_est + distal_est
+        fit_residual = centroid - fit_prediction
+        row["workspace_fit_residual_xyz_mm"] = _array_to_xyz_list(fit_residual)
+        row["workspace_fit_residual_norm_mm"] = float(np.linalg.norm(fit_residual))
+
+    _attach_direct_segment_displacements(
+        rows,
+        centroid_key="proximal_centroid_xyz_mm",
+        displacement_key="proximal_measured_displacement_xyz_mm",
+        norm_key="proximal_measured_displacement_norm_mm",
+    )
+    _attach_direct_segment_displacements(
+        rows,
+        centroid_key="distal_relative_centroid_xyz_mm",
+        displacement_key="distal_relative_measured_displacement_xyz_mm",
+        norm_key="distal_relative_measured_displacement_norm_mm",
+    )
+
+
+def _set_default_measured_fields(row: dict[str, Any]) -> None:
+    row.setdefault("measured_tip_reference_xyz_mm", None)
+    row.setdefault("measured_displacement_reference_method", None)
+    row.setdefault("measured_tip_displacement_xyz_mm", None)
+    row.setdefault("measured_tip_displacement_norm_mm", None)
+    row.setdefault("measured_tip_displacement_xy_mm", None)
+    row.setdefault("proximal_estimated_displacement_xyz_mm", None)
+    row.setdefault("proximal_estimated_displacement_norm_mm", None)
+    row.setdefault("distal_estimated_displacement_xyz_mm", None)
+    row.setdefault("distal_estimated_displacement_norm_mm", None)
+    row.setdefault("proximal_measured_displacement_xyz_mm", None)
+    row.setdefault("proximal_measured_displacement_norm_mm", None)
+    row.setdefault("distal_relative_measured_displacement_xyz_mm", None)
+    row.setdefault("distal_relative_measured_displacement_norm_mm", None)
+    row.setdefault("workspace_fit_rank", None)
+    row.setdefault("workspace_fit_residual_xyz_mm", None)
+    row.setdefault("workspace_fit_residual_norm_mm", None)
+    row.setdefault("segment_separation_method", None)
+
+
+def _measured_zero_reference(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    data_indices: Sequence[int],
+    centroids: np.ndarray,
+    command: np.ndarray,
+) -> tuple[np.ndarray, str]:
+    neutral_positions: list[np.ndarray] = []
+    for row in rows:
+        command_l2 = float(row.get("command_l2_cm") or 0.0)
+        centroid = _xyz_array(row.get("centroid_xyz_mm"))
+        if command_l2 <= 1e-9 and centroid is not None:
+            neutral_positions.append(centroid)
+    if neutral_positions:
+        return np.vstack(neutral_positions).mean(axis=0), "captured_zero_command_target"
+
+    coeffs, rank = _least_squares_workspace_coefficients(command=command, centroids=centroids)
+    if rank >= 5:
+        return np.asarray(coeffs[0], dtype=float), "least_squares_zero_command_intercept"
+
+    closest_index = min(data_indices, key=lambda idx: float(rows[idx].get("command_l2_cm") or 0.0))
+    closest = _xyz_array(rows[closest_index].get("centroid_xyz_mm"))
+    if closest is not None:
+        return closest, f"nearest_available_target:{rows[closest_index].get('target_id')}"
+    return centroids.mean(axis=0), "workspace_centroid"
+
+
+def _least_squares_workspace_coefficients(*, command: np.ndarray, centroids: np.ndarray) -> tuple[np.ndarray, int]:
+    if command.size == 0 or centroids.size == 0:
+        return np.zeros((5, 3), dtype=float), 0
+    design = np.column_stack([np.ones(command.shape[0], dtype=float), command])
+    coeffs, _residuals, rank, _singular_values = np.linalg.lstsq(design, centroids, rcond=None)
+    if coeffs.shape != (5, 3):
+        padded = np.zeros((5, 3), dtype=float)
+        padded[: coeffs.shape[0], : coeffs.shape[1]] = coeffs
+        coeffs = padded
+    return np.asarray(coeffs, dtype=float), int(rank)
+
+
+def _attach_direct_segment_displacements(
+    rows: list[dict[str, Any]],
+    *,
+    centroid_key: str,
+    displacement_key: str,
+    norm_key: str,
+) -> None:
+    data = [(idx, _xyz_array(row.get(centroid_key))) for idx, row in enumerate(rows)]
+    data = [(idx, xyz) for idx, xyz in data if xyz is not None]
+    if not data:
+        return
+    command = np.asarray(
+        [
+            [
+                float(rows[idx].get("bottom_x_cm") or 0.0),
+                float(rows[idx].get("bottom_y_cm") or 0.0),
+                float(rows[idx].get("top_x_cm") or 0.0),
+                float(rows[idx].get("top_y_cm") or 0.0),
+            ]
+            for idx, _xyz in data
+        ],
+        dtype=float,
+    )
+    centroids = np.asarray([xyz for _idx, xyz in data], dtype=float)
+    reference_xyz, _method = _measured_zero_reference(
+        rows=rows,
+        data_indices=[idx for idx, _xyz in data],
+        centroids=centroids,
+        command=command,
+    )
+    for idx, xyz in data:
+        displacement = xyz - reference_xyz
+        rows[idx][displacement_key] = _array_to_xyz_list(displacement)
+        rows[idx][norm_key] = float(np.linalg.norm(displacement))
+
+
+def _xyz_array(value: Any) -> np.ndarray | None:
+    if not isinstance(value, (list, tuple, np.ndarray)) or len(value) < 3:
+        return None
+    try:
+        arr = np.asarray([float(value[0]), float(value[1]), float(value[2])], dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if not np.all(np.isfinite(arr)):
+        return None
+    return arr
+
+
+def _array_to_xyz_list(value: np.ndarray | Sequence[float]) -> list[float]:
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    return [float(v) for v in arr[:3]]
+
+
+def _numeric_row_values(rows: Sequence[Mapping[str, Any]], key: str) -> np.ndarray:
+    values: list[float] = []
+    for row in rows:
+        value = row.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            values.append(float(value))
+    return np.asarray(values, dtype=float)
 
 
 def summarize_workspace_repeatability(
@@ -183,6 +490,16 @@ def summarize_workspace_repeatability(
             "mean_repeats_per_target": 0.0,
             "target_distal_rms_threshold_mm": target_distal_rms_threshold_mm,
             "targets_above_threshold": None,
+            "measured_displacement_reference_method": None,
+            "measured_tip_reference_xyz_mm": None,
+            "measured_tip_displacement_median_mm": None,
+            "measured_tip_displacement_max_mm": None,
+            "intermediate_marker_targets_with_data": 0,
+            "direct_proximal_rms_mean_mm": None,
+            "direct_distal_relative_rms_mean_mm": None,
+            "segment_separation_method": None,
+            "proximal_estimated_displacement_max_mm": None,
+            "distal_estimated_displacement_max_mm": None,
         }
     rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows_with_data])
     max_radial = np.asarray([float(row.get("max_radial_mm") or 0.0) for row in rows_with_data])
@@ -201,6 +518,12 @@ def summarize_workspace_repeatability(
     fraction_above_goal: float | None = None
     if goal_mm is not None:
         fraction_above_goal = float(np.sum(rms_values > goal_mm) / float(len(rms_values)))
+    measured_displacements = _numeric_row_values(rows_with_data, "measured_tip_displacement_norm_mm")
+    proximal_estimated = _numeric_row_values(rows_with_data, "proximal_estimated_displacement_norm_mm")
+    distal_estimated = _numeric_row_values(rows_with_data, "distal_estimated_displacement_norm_mm")
+    proximal_rms = _numeric_row_values(rows_with_data, "proximal_rms_spread_mm")
+    distal_relative_rms = _numeric_row_values(rows_with_data, "distal_relative_rms_spread_mm")
+    first_row = rows_with_data[0]
     # Top-5 worst targets by RMS (id, rms, accepted_repeats).
     worst_order = np.argsort(-rms_values)
     worst_targets: list[dict[str, Any]] = [
@@ -238,6 +561,28 @@ def summarize_workspace_repeatability(
         "mean_repeats_per_target": float(np.mean(repeats)),
         "target_distal_rms_threshold_mm": target_distal_rms_threshold_mm,
         "targets_above_threshold": targets_above_threshold,
+        "measured_displacement_reference_method": first_row.get("measured_displacement_reference_method"),
+        "measured_tip_reference_xyz_mm": first_row.get("measured_tip_reference_xyz_mm"),
+        "measured_tip_displacement_median_mm": (
+            float(np.median(measured_displacements)) if measured_displacements.size else None
+        ),
+        "measured_tip_displacement_max_mm": (
+            float(np.max(measured_displacements)) if measured_displacements.size else None
+        ),
+        "intermediate_marker_targets_with_data": int(
+            sum(1 for row in rows_with_data if int(row.get("proximal_accepted_repeats") or 0) > 0)
+        ),
+        "direct_proximal_rms_mean_mm": float(np.mean(proximal_rms)) if proximal_rms.size else None,
+        "direct_distal_relative_rms_mean_mm": (
+            float(np.mean(distal_relative_rms)) if distal_relative_rms.size else None
+        ),
+        "segment_separation_method": first_row.get("segment_separation_method"),
+        "proximal_estimated_displacement_max_mm": (
+            float(np.max(proximal_estimated)) if proximal_estimated.size else None
+        ),
+        "distal_estimated_displacement_max_mm": (
+            float(np.max(distal_estimated)) if distal_estimated.size else None
+        ),
     }
 
 
@@ -324,7 +669,10 @@ def write_two_segment_workspace_repeatability_outputs(
             create_figure,
             create_3d_figure,
             save_figure,
+            set_equal_xy,
+            set_equal_xyz,
             style_axes,
+            style_3d_axes,
         )
 
         max_amplitude_mm = float(metrics.get("max_segment_displacement_cm") or 0.0) * 10.0
@@ -333,19 +681,23 @@ def write_two_segment_workspace_repeatability_outputs(
             paths["thesis_01"] = _write_thesis_01(
                 output_dir / THESIS_01_PNG,
                 rows_with_data=rows_with_data,
+                visit_dicts=visit_dicts,
                 summary=summary,
                 max_amplitude_mm=max_amplitude_mm,
                 create_3d_figure=create_3d_figure,
                 save_figure=save_figure,
-                style_axes=style_axes,
+                set_equal_xyz=set_equal_xyz,
+                style_3d_axes=style_3d_axes,
             )
             paths["thesis_02"] = _write_thesis_02(
                 output_dir / THESIS_02_PNG,
                 rows_with_data=rows_with_data,
+                visit_dicts=visit_dicts,
                 summary=summary,
                 max_amplitude_mm=max_amplitude_mm,
                 create_figure=create_figure,
                 save_figure=save_figure,
+                set_equal_xy=set_equal_xy,
                 style_axes=style_axes,
             )
             paths["thesis_03"] = _write_thesis_03(
@@ -362,8 +714,8 @@ def write_two_segment_workspace_repeatability_outputs(
                 rows_with_data=rows_with_data,
                 summary=summary,
                 max_amplitude_mm=max_amplitude_mm,
-                create_figure=create_figure,
                 save_figure=save_figure,
+                set_equal_xy=set_equal_xy,
                 style_axes=style_axes,
             )
     except Exception:
@@ -449,6 +801,14 @@ def _write_workspace_map_per_target_csv(path: Path, per_target_rows: Sequence[Ma
         "centroid_x_mm",
         "centroid_y_mm",
         "centroid_z_mm",
+        "measured_tip_displacement_x_mm",
+        "measured_tip_displacement_y_mm",
+        "measured_tip_displacement_z_mm",
+        "measured_tip_displacement_norm_mm",
+        "proximal_estimated_displacement_norm_mm",
+        "distal_estimated_displacement_norm_mm",
+        "proximal_measured_displacement_norm_mm",
+        "distal_relative_measured_displacement_norm_mm",
         "group_tag",
         # Two-segment extras.
         "bottom_x_cm",
@@ -461,12 +821,13 @@ def _write_workspace_map_per_target_csv(path: Path, per_target_rows: Sequence[Ma
         writer.writeheader()
         for row in per_target_rows:
             centroid = row.get("centroid_xyz_mm") or [None, None, None]
+            measured = row.get("measured_tip_displacement_xyz_mm") or [None, None, None]
             writer.writerow(
                 {
                     "target_index": row.get("target_index"),
                     "target_label": row.get("target_id"),
-                    "target_x_mm": float(row.get("bottom_x_cm") or 0.0) * 10.0,
-                    "target_y_mm": float(row.get("bottom_y_cm") or 0.0) * 10.0,
+                    "target_x_mm": row.get("x_mm"),
+                    "target_y_mm": row.get("y_mm"),
                     "target_amplitude_mm": row.get("target_amplitude_mm"),
                     "accepted_repeats": row.get("accepted_repeats"),
                     "rms_spread_mm": row.get("rms_spread_mm"),
@@ -479,6 +840,14 @@ def _write_workspace_map_per_target_csv(path: Path, per_target_rows: Sequence[Ma
                     "centroid_x_mm": centroid[0] if centroid else None,
                     "centroid_y_mm": centroid[1] if centroid else None,
                     "centroid_z_mm": centroid[2] if centroid else None,
+                    "measured_tip_displacement_x_mm": measured[0] if measured else None,
+                    "measured_tip_displacement_y_mm": measured[1] if measured else None,
+                    "measured_tip_displacement_z_mm": measured[2] if measured else None,
+                    "measured_tip_displacement_norm_mm": row.get("measured_tip_displacement_norm_mm"),
+                    "proximal_estimated_displacement_norm_mm": row.get("proximal_estimated_displacement_norm_mm"),
+                    "distal_estimated_displacement_norm_mm": row.get("distal_estimated_displacement_norm_mm"),
+                    "proximal_measured_displacement_norm_mm": row.get("proximal_measured_displacement_norm_mm"),
+                    "distal_relative_measured_displacement_norm_mm": row.get("distal_relative_measured_displacement_norm_mm"),
                     "group_tag": row.get("group_tag"),
                     "bottom_x_cm": row.get("bottom_x_cm"),
                     "bottom_y_cm": row.get("bottom_y_cm"),
@@ -592,12 +961,45 @@ def _write_per_target_csv(path: Path, per_target_rows: Sequence[Mapping[str, Any
         "centroid_x_mm",
         "centroid_y_mm",
         "centroid_z_mm",
+        "measured_tip_displacement_x_mm",
+        "measured_tip_displacement_y_mm",
+        "measured_tip_displacement_z_mm",
+        "measured_tip_displacement_norm_mm",
+        "proximal_command_norm_cm",
+        "distal_command_norm_cm",
+        "proximal_accepted_repeats",
+        "proximal_centroid_x_mm",
+        "proximal_centroid_y_mm",
+        "proximal_centroid_z_mm",
+        "proximal_rms_spread_mm",
+        "distal_relative_accepted_repeats",
+        "distal_relative_centroid_x_mm",
+        "distal_relative_centroid_y_mm",
+        "distal_relative_centroid_z_mm",
+        "distal_relative_rms_spread_mm",
+        "proximal_estimated_displacement_x_mm",
+        "proximal_estimated_displacement_y_mm",
+        "proximal_estimated_displacement_z_mm",
+        "proximal_estimated_displacement_norm_mm",
+        "distal_estimated_displacement_x_mm",
+        "distal_estimated_displacement_y_mm",
+        "distal_estimated_displacement_z_mm",
+        "distal_estimated_displacement_norm_mm",
+        "proximal_measured_displacement_norm_mm",
+        "distal_relative_measured_displacement_norm_mm",
+        "measured_displacement_reference_method",
+        "segment_separation_method",
     ]
     with Path(path).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for row in per_target_rows:
             centroid = row.get("centroid_xyz_mm") or [None, None, None]
+            measured = row.get("measured_tip_displacement_xyz_mm") or [None, None, None]
+            proximal_centroid = row.get("proximal_centroid_xyz_mm") or [None, None, None]
+            distal_relative_centroid = row.get("distal_relative_centroid_xyz_mm") or [None, None, None]
+            proximal_est = row.get("proximal_estimated_displacement_xyz_mm") or [None, None, None]
+            distal_est = row.get("distal_estimated_displacement_xyz_mm") or [None, None, None]
             writer.writerow(
                 {
                     "target_index": row.get("target_index"),
@@ -619,6 +1021,40 @@ def _write_per_target_csv(path: Path, per_target_rows: Sequence[Mapping[str, Any
                     "centroid_x_mm": centroid[0] if centroid else None,
                     "centroid_y_mm": centroid[1] if centroid else None,
                     "centroid_z_mm": centroid[2] if centroid else None,
+                    "measured_tip_displacement_x_mm": measured[0] if measured else None,
+                    "measured_tip_displacement_y_mm": measured[1] if measured else None,
+                    "measured_tip_displacement_z_mm": measured[2] if measured else None,
+                    "measured_tip_displacement_norm_mm": row.get("measured_tip_displacement_norm_mm"),
+                    "proximal_command_norm_cm": row.get("proximal_command_norm_cm"),
+                    "distal_command_norm_cm": row.get("distal_command_norm_cm"),
+                    "proximal_accepted_repeats": row.get("proximal_accepted_repeats"),
+                    "proximal_centroid_x_mm": proximal_centroid[0] if proximal_centroid else None,
+                    "proximal_centroid_y_mm": proximal_centroid[1] if proximal_centroid else None,
+                    "proximal_centroid_z_mm": proximal_centroid[2] if proximal_centroid else None,
+                    "proximal_rms_spread_mm": row.get("proximal_rms_spread_mm"),
+                    "distal_relative_accepted_repeats": row.get("distal_relative_accepted_repeats"),
+                    "distal_relative_centroid_x_mm": (
+                        distal_relative_centroid[0] if distal_relative_centroid else None
+                    ),
+                    "distal_relative_centroid_y_mm": (
+                        distal_relative_centroid[1] if distal_relative_centroid else None
+                    ),
+                    "distal_relative_centroid_z_mm": (
+                        distal_relative_centroid[2] if distal_relative_centroid else None
+                    ),
+                    "distal_relative_rms_spread_mm": row.get("distal_relative_rms_spread_mm"),
+                    "proximal_estimated_displacement_x_mm": proximal_est[0] if proximal_est else None,
+                    "proximal_estimated_displacement_y_mm": proximal_est[1] if proximal_est else None,
+                    "proximal_estimated_displacement_z_mm": proximal_est[2] if proximal_est else None,
+                    "proximal_estimated_displacement_norm_mm": row.get("proximal_estimated_displacement_norm_mm"),
+                    "distal_estimated_displacement_x_mm": distal_est[0] if distal_est else None,
+                    "distal_estimated_displacement_y_mm": distal_est[1] if distal_est else None,
+                    "distal_estimated_displacement_z_mm": distal_est[2] if distal_est else None,
+                    "distal_estimated_displacement_norm_mm": row.get("distal_estimated_displacement_norm_mm"),
+                    "proximal_measured_displacement_norm_mm": row.get("proximal_measured_displacement_norm_mm"),
+                    "distal_relative_measured_displacement_norm_mm": row.get("distal_relative_measured_displacement_norm_mm"),
+                    "measured_displacement_reference_method": row.get("measured_displacement_reference_method"),
+                    "segment_separation_method": row.get("segment_separation_method"),
                 }
             )
     return path
@@ -668,10 +1104,20 @@ def _write_summary_text(path: Path, *, metrics: Mapping[str, Any], summary: Mapp
         f"  p95_per_target_rms_mm:         {summary.get('p95_per_target_rms_mm')}",
         f"  worst_target_rms_mm:           {summary.get('worst_target_rms_mm')} (id={summary.get('worst_target_id')})",
         f"  best_target_rms_mm:            {summary.get('best_target_rms_mm')} (id={summary.get('best_target_id')})",
-        f"  targets_with_repeats:          {summary.get('targets_with_repeats')}",
+        f"  targets_with_data:             {summary.get('targets_with_data')}",
         f"  targets_below_minimum_repeats: {summary.get('targets_below_minimum_repeats')}",
         f"  minimum_repeats_per_target:    {summary.get('minimum_repeats_per_target')}",
         f"  mean_repeats_per_target:       {summary.get('mean_repeats_per_target')}",
+        "",
+        "Measured-space analysis:",
+        f"  measured_reference_method:      {summary.get('measured_displacement_reference_method')}",
+        f"  measured_tip_reference_xyz_mm:  {summary.get('measured_tip_reference_xyz_mm')}",
+        f"  measured_tip_disp_median_mm:    {summary.get('measured_tip_displacement_median_mm')}",
+        f"  measured_tip_disp_max_mm:       {summary.get('measured_tip_displacement_max_mm')}",
+        f"  intermediate_marker_targets:    {summary.get('intermediate_marker_targets_with_data')}",
+        f"  segment_separation_method:      {summary.get('segment_separation_method')}",
+        f"  proximal_est_disp_max_mm:       {summary.get('proximal_estimated_displacement_max_mm')}",
+        f"  distal_est_disp_max_mm:         {summary.get('distal_estimated_displacement_max_mm')}",
         "",
         "This is a data-collection workflow. Repeatability is reported honestly;",
         "the run can be valid even if RMS exceeds any operator-configured target.",
@@ -693,30 +1139,99 @@ def _color_vmax(values: Sequence[float]) -> float:
     return max(p95, float(arr.max()) * 0.5, 1e-6)
 
 
+def _accepted_distal_capture_displacements(
+    visit_dicts: Sequence[Mapping[str, Any]],
+    *,
+    reference_xyz: np.ndarray | None,
+) -> np.ndarray | None:
+    if reference_xyz is None:
+        return None
+    values: list[np.ndarray] = []
+    for visit in visit_dicts:
+        if not bool(visit.get("accepted") or visit.get("capture_accepted")):
+            continue
+        xyz = _xyz_array(visit.get("distal_xyz_robot_mm") or visit.get("position_mm"))
+        if xyz is not None:
+            values.append(xyz - reference_xyz)
+    if not values:
+        return None
+    return np.vstack(values).astype(float)
+
+
+def _row_xyz_values(rows: Sequence[Mapping[str, Any]], key: str) -> np.ndarray | None:
+    values = [_xyz_array(row.get(key)) for row in rows]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return np.vstack(values).astype(float)
+
+
 def _write_thesis_01(
     path: Path,
     *,
     rows_with_data: Sequence[Mapping[str, Any]],
+    visit_dicts: Sequence[Mapping[str, Any]],
     summary: Mapping[str, Any],
     max_amplitude_mm: float,
     create_3d_figure,
     save_figure,
-    style_axes,
+    set_equal_xyz,
+    style_3d_axes,
 ) -> Path:
-    fig, ax = create_3d_figure()
-    xs = [float(r["x_mm"]) for r in rows_with_data]
-    ys = [float(r["y_mm"]) for r in rows_with_data]
-    zs = [float(r["rms_spread_mm"]) for r in rows_with_data]
-    vmax = _color_vmax(zs)
-    sc = ax.scatter(xs, ys, zs, c=zs, cmap="viridis", vmin=0.0, vmax=vmax, s=20)
-    ax.set_xlabel("Bottom X (mm, commanded)")
-    ax.set_ylabel("Bottom Y (mm, commanded)")
-    ax.set_zlabel("RMS spread (mm)")
-    ax.set_title(
-        "Two-Segment Workspace Repeatability: per-target distal RMS (3D)\n"
-        f"overall RMS = {_fmt(summary.get('overall_distal_rms_mm'))} mm"
+    fig, ax = create_3d_figure(size="thesis_3d")
+    reference = _xyz_array(summary.get("measured_tip_reference_xyz_mm"))
+    capture_xyz = _accepted_distal_capture_displacements(visit_dicts, reference_xyz=reference)
+    if capture_xyz is not None:
+        ax.scatter(
+            capture_xyz[:, 0],
+            capture_xyz[:, 1],
+            capture_xyz[:, 2],
+            color="#cbd5e1",
+            s=3,
+            alpha=0.16,
+            depthshade=False,
+        )
+    plotted_rows = [
+        r
+        for r in rows_with_data
+        if _xyz_array(r.get("measured_tip_displacement_xyz_mm")) is not None
+        and r.get("rms_spread_mm") is not None
+    ]
+    points = np.asarray(
+        [_xyz_array(r.get("measured_tip_displacement_xyz_mm")) for r in plotted_rows],
+        dtype=float,
     )
-    fig.colorbar(sc, ax=ax, label="RMS spread (mm)", shrink=0.7)
+    rms = [float(r["rms_spread_mm"]) for r in plotted_rows]
+    vmax = _color_vmax(rms)
+    sc = ax.scatter(
+        points[:, 0],
+        points[:, 1],
+        points[:, 2],
+        c=rms,
+        cmap="viridis",
+        vmin=0.0,
+        vmax=vmax,
+        s=24,
+        edgecolors="#111827",
+        linewidths=0.25,
+        depthshade=False,
+    )
+    all_xyz = points if capture_xyz is None else np.vstack([capture_xyz, points])
+    set_equal_xyz(ax, x_values=all_xyz[:, 0], y_values=all_xyz[:, 1], z_values=all_xyz[:, 2], pad_fraction=0.08)
+    style_3d_axes(
+        ax,
+        title=(
+            "Measured Workspace Repeatability\n"
+            f"overall RMS = {_fmt(summary.get('overall_distal_rms_mm'))} mm"
+        ),
+        xlabel="Tip dX (mm)",
+        ylabel="Tip dY (mm)",
+        zlabel="Tip dZ (mm)",
+        labelpad=7.0,
+        view_elev=22.0,
+        view_azim=-45.0,
+    )
+    fig.colorbar(sc, ax=ax, label="RMS (mm)", shrink=0.68, pad=0.12)
     save_figure(fig, path)
     return path
 
@@ -725,38 +1240,45 @@ def _write_thesis_02(
     path: Path,
     *,
     rows_with_data: Sequence[Mapping[str, Any]],
+    visit_dicts: Sequence[Mapping[str, Any]],
     summary: Mapping[str, Any],
     max_amplitude_mm: float,
     create_figure,
     save_figure,
+    set_equal_xy,
     style_axes,
 ) -> Path:
-    fig, ax = create_figure(size="square")
-    xs = [float(r["x_mm"]) for r in rows_with_data]
-    ys = [float(r["y_mm"]) for r in rows_with_data]
-    zs = [float(r["rms_spread_mm"]) for r in rows_with_data]
-    vmax = _color_vmax(zs)
-    sc = ax.scatter(xs, ys, c=zs, cmap="viridis", vmin=0.0, vmax=vmax, s=30, edgecolors="white", linewidths=0.4)
-    if max_amplitude_mm > 0:
-        circle = np.linspace(0.0, 2.0 * math.pi, 64)
-        ax.plot(
-            float(max_amplitude_mm) * np.cos(circle),
-            float(max_amplitude_mm) * np.sin(circle),
-            color="#94a3b8",
-            linewidth=0.7,
-            linestyle="--",
-            label=f"workspace ±{max_amplitude_mm:.1f} mm",
+    fig, ax = create_figure(size="wide")
+    reference = _xyz_array(summary.get("measured_tip_reference_xyz_mm"))
+    capture_xyz = _accepted_distal_capture_displacements(visit_dicts, reference_xyz=reference)
+    if capture_xyz is not None:
+        ax.scatter(
+            capture_xyz[:, 0],
+            capture_xyz[:, 1],
+            color="#cbd5e1",
+            s=5,
+            alpha=0.14,
+            linewidths=0,
+            label="captures",
         )
-    fig.colorbar(sc, ax=ax, label="RMS spread (mm)")
+    plotted_rows = [r for r in rows_with_data if r.get("x_mm") is not None and r.get("y_mm") is not None]
+    xs = [float(r["x_mm"]) for r in plotted_rows]
+    ys = [float(r["y_mm"]) for r in plotted_rows]
+    zs = [float(r["rms_spread_mm"]) for r in plotted_rows]
+    vmax = _color_vmax(zs)
+    sc = ax.scatter(xs, ys, c=zs, cmap="viridis", vmin=0.0, vmax=vmax, s=34, edgecolors="white", linewidths=0.4)
+    ax.axhline(0.0, color="#94a3b8", linewidth=0.7)
+    ax.axvline(0.0, color="#94a3b8", linewidth=0.7)
+    fig.colorbar(sc, ax=ax, label="RMS (mm)", pad=0.03)
     style_axes(
         ax,
-        title="Two-Segment Workspace RMS Map (commanded bottom XY)",
-        xlabel="Bottom X (mm)",
-        ylabel="Bottom Y (mm)",
+        title="Measured Tip Repeatability",
+        xlabel="Tip dX (mm)",
+        ylabel="Tip dY (mm)",
     )
-    ax.set_aspect("equal", adjustable="datalim")
-    if max_amplitude_mm > 0:
-        ax.legend(loc="upper right", fontsize=8)
+    x_for_limits = xs if capture_xyz is None else list(capture_xyz[:, 0]) + xs
+    y_for_limits = ys if capture_xyz is None else list(capture_xyz[:, 1]) + ys
+    set_equal_xy(ax, x_values=x_for_limits, y_values=y_for_limits, pad_fraction=0.08)
     save_figure(fig, path)
     return path
 
@@ -772,9 +1294,11 @@ def _write_thesis_03(
     style_axes,
 ) -> Path:
     fig, ax = create_figure(size="wide")
-    amplitudes = [float(r.get("target_amplitude_mm") or 0.0) for r in rows_with_data]
+    amplitudes = [float(r.get("measured_tip_displacement_norm_mm") or 0.0) for r in rows_with_data]
     rms = [float(r["rms_spread_mm"]) for r in rows_with_data]
-    ax.scatter(amplitudes, rms, s=20, alpha=0.7)
+    color_values = [float(r.get("distal_command_norm_cm") or 0.0) for r in rows_with_data]
+    sc = ax.scatter(amplitudes, rms, c=color_values, cmap="plasma", s=22, alpha=0.78, edgecolors="none")
+    fig.colorbar(sc, ax=ax, label="distal command (cm)")
     if summary.get("overall_distal_rms_mm") is not None:
         ax.axhline(
             float(summary["overall_distal_rms_mm"]),
@@ -793,8 +1317,8 @@ def _write_thesis_03(
         )
     style_axes(
         ax,
-        title="Two-Segment Per-Target RMS vs Commanded Amplitude",
-        xlabel="Target commanded amplitude (mm, 4D L2-norm)",
+        title="Repeatability vs Measured Tip Displacement",
+        xlabel="Measured tip displacement (mm)",
         ylabel="RMS spread (mm)",
     )
     ax.legend(loc="upper left", fontsize=8)
@@ -808,27 +1332,76 @@ def _write_thesis_04(
     rows_with_data: Sequence[Mapping[str, Any]],
     summary: Mapping[str, Any],
     max_amplitude_mm: float,
-    create_figure,
     save_figure,
+    set_equal_xy,
     style_axes,
 ) -> Path:
-    fig, ax = create_figure(size="square")
-    xs = [float(r["x_mm"]) for r in rows_with_data]
-    ys = [float(r["y_mm"]) for r in rows_with_data]
-    zs = [float(r["rms_spread_mm"]) for r in rows_with_data]
-    vmax = _color_vmax(zs)
-    sizes = [40.0 + 200.0 * float(z) / max(vmax, 1e-6) for z in zs]
-    sc = ax.scatter(xs, ys, s=sizes, c=zs, cmap="viridis", vmin=0.0, vmax=vmax, alpha=0.85)
-    fig.colorbar(sc, ax=ax, label="RMS spread (mm)")
-    style_axes(
-        ax,
-        title="Two-Segment 2D Repeatability Map (bigger = worse)",
-        xlabel="Bottom X (mm)",
-        ylabel="Bottom Y (mm)",
+    from continuum_robot.experiments.plotting import report_style
+
+    with report_style() as plt:
+        fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.9), constrained_layout=True)
+    segment_method = str(summary.get("segment_separation_method") or "")
+    use_direct = segment_method == "direct_intermediate_marker"
+    proximal_key = "proximal_measured_displacement_xyz_mm" if use_direct else "proximal_estimated_displacement_xyz_mm"
+    distal_key = "distal_relative_measured_displacement_xyz_mm" if use_direct else "distal_estimated_displacement_xyz_mm"
+    proximal = _row_xyz_values(rows_with_data, proximal_key)
+    distal = _row_xyz_values(rows_with_data, distal_key)
+    _plot_segment_displacement_panel(
+        fig=fig,
+        ax=axes[0],
+        values=proximal,
+        title="Proximal Segment",
+        set_equal_xy=set_equal_xy,
+        style_axes=style_axes,
     )
-    ax.set_aspect("equal", adjustable="datalim")
+    _plot_segment_displacement_panel(
+        fig=fig,
+        ax=axes[1],
+        values=distal,
+        title="Distal Segment",
+        set_equal_xy=set_equal_xy,
+        style_axes=style_axes,
+    )
     save_figure(fig, path)
     return path
+
+
+def _plot_segment_displacement_panel(
+    *,
+    fig,
+    ax,
+    values: np.ndarray | None,
+    title: str,
+    set_equal_xy,
+    style_axes,
+) -> None:
+    if values is None or values.size == 0:
+        style_axes(ax, title=title, xlabel="dX (mm)", ylabel="dY (mm)")
+        ax.text(0.5, 0.5, "not recorded", transform=ax.transAxes, ha="center", va="center")
+        return
+    norms = np.linalg.norm(values, axis=1)
+    vmax = _color_vmax([float(v) for v in norms])
+    ax.axhline(0.0, color="#94a3b8", linewidth=0.7)
+    ax.axvline(0.0, color="#94a3b8", linewidth=0.7)
+    sc = ax.scatter(
+        values[:, 0],
+        values[:, 1],
+        c=norms,
+        cmap="magma",
+        vmin=0.0,
+        vmax=vmax,
+        s=20,
+        edgecolors="white",
+        linewidths=0.25,
+    )
+    fig.colorbar(sc, ax=ax, label="norm (mm)", pad=0.03)
+    style_axes(
+        ax,
+        title=title,
+        xlabel="dX (mm)",
+        ylabel="dY (mm)",
+    )
+    set_equal_xy(ax, x_values=values[:, 0], y_values=values[:, 1], pad_fraction=0.12)
 
 
 # ---------------------------------------------------------------------------
