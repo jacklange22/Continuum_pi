@@ -33,6 +33,7 @@ import csv
 import json
 import logging
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,15 @@ DEFAULT_SUSTAINED_OVERCURRENT_SAMPLES = 3
 DEFAULT_MAX_TICK_DELTA_FROM_STARTUP = 200
 DEFAULT_HARD_MAX_TICK_DELTA_FROM_STARTUP = 600
 DEFAULT_MAX_STEP_TICKS_PER_UPDATE = 25
+
+# Minimum spacing between telemetry reads in the execute loop. Reading all 8
+# servos is ~5 register reads each, far too slow to do between every goal
+# write at the demo's command rate -- doing so was the cause of the laggy /
+# jumpy motion. We decimate to ~this interval so the hot path is just a fast
+# sync goal write, while still sampling current often enough to fail-closed
+# on sustained overcurrent. Patterns slower than this (e.g. a 3-5 Hz figure-8)
+# still read every tick, so their behaviour is unchanged.
+DEMO_TELEMETRY_INTERVAL_S = 0.2
 
 
 def _optional_non_negative_int(payload: dict[str, Any], key: str) -> int | None:
@@ -175,9 +185,10 @@ class TwoSegmentSlowMotionDemoConfig:
     max_waypoint_separation_norm: float = 2.20
     # For sci_fi_waypoint_relay this is the dense blend sample rate AND the
     # bus write rate (the relay streams an interpolated path, not one write
-    # per waypoint). 15 Hz is smooth and well under the ~30-50 Hz 8-servo
-    # sync-write ceiling.
-    command_rate_hz: float = 15.0
+    # per waypoint). 30 Hz reads as smooth, continuous motion and sits at the
+    # realistic 8-servo sync-write ceiling; telemetry is decimated so it does
+    # not steal time from the write cadence.
+    command_rate_hz: float = 30.0
 
     # Mode + provenance
     dry_run: bool = True  # default ON: demo is meant to be previewed first
@@ -257,7 +268,7 @@ class TwoSegmentSlowMotionDemoConfig:
             max_waypoint_separation_norm=max(
                 0.0, float(payload.get("max_waypoint_separation_norm", 2.20)),
             ),
-            command_rate_hz=max(0.5, float(payload.get("command_rate_hz", 15.0))),
+            command_rate_hz=max(0.5, float(payload.get("command_rate_hz", 30.0))),
             dry_run=bool(payload.get("dry_run", True)),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", False)),
             tracker_overlay_enabled=bool(payload.get("tracker_overlay_enabled", False)),
@@ -649,6 +660,7 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
         startup_ticks = [int(self._startup_ticks_by_servo[int(servo_id)]) for servo_id in commanded_ids]
         bottom_segment_key = str(getattr(context, "bottom_segment_key", "") or "")
         sleep_fn = session.context.sleep_fn
+        monotonic_fn = getattr(session.context, "monotonic_fn", time.monotonic)
 
         servo_service = session.context.servo_service
         mapper = (
@@ -697,12 +709,23 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
                 previous_by_servo=previous_profile_by_servo,
             )
 
-        previous_elapsed = 0.0
+        # Pace to an absolute schedule: sleep until each point's scheduled
+        # elapsed time, THEN write. Per-tick bus work (the goal write plus the
+        # occasional telemetry read) therefore cannot accumulate drift -- if a
+        # tick overruns, the next one simply doesn't sleep and the stream
+        # catches up, instead of every tick pushing the whole demo later and
+        # later (which is what made the motion laggy and jumpy).
+        loop_start_s = monotonic_fn()
+        last_telemetry_elapsed_s: float | None = None
         try:
             for index, point in enumerate(self._trajectory):
                 if session.stop_requested():
                     self._stop_reason = "operator_stop"
                     break
+                if not self.config.dry_run:
+                    remaining_s = (loop_start_s + float(point.elapsed_s)) - monotonic_fn()
+                    if remaining_s > 0.0:
+                        sleep_fn(remaining_s)
                 command = build_two_segment_command_for_point(
                     point, bottom_segment_key=bottom_segment_key or SEGMENT_A
                 )
@@ -755,9 +778,25 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
                         except Exception as exc:
                             skip_reason = f"bus_error: {exc}"
                             safety_state = "bus_error"
-                    if command_sent and not self.config.dry_run:
+                    # Decimated telemetry: only sample every DEMO_TELEMETRY_INTERVAL_S
+                    # so the hot path is just the fast sync goal write. Reading
+                    # all 8 servos every tick is what made the motion lag. We
+                    # still sample current often enough to fail-closed on
+                    # sustained overcurrent, and always sample on the first
+                    # commanded tick. ``read_minimal_telemetry`` (a smaller
+                    # register set built for tight loops) is used when available.
+                    telemetry_due = last_telemetry_elapsed_s is None or (
+                        float(point.elapsed_s) - last_telemetry_elapsed_s
+                        >= DEMO_TELEMETRY_INTERVAL_S - 1e-9
+                    )
+                    if command_sent and not self.config.dry_run and telemetry_due:
+                        last_telemetry_elapsed_s = float(point.elapsed_s)
                         try:
-                            telemetry = servo_service.read_live_telemetry(commanded_ids)
+                            reader = (
+                                getattr(servo_service, "read_minimal_telemetry", None)
+                                or servo_service.read_live_telemetry
+                            )
+                            telemetry = reader(commanded_ids)
                             for servo_id, item in telemetry.items():
                                 if item is None:
                                     continue
@@ -829,12 +868,6 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
                     )
                 )
                 session.update_progress(index + 1, len(self._trajectory), {"phase": point.phase_label})
-
-                # Sleep to the next tick.
-                dt = max(0.0, float(point.elapsed_s) - float(previous_elapsed))
-                if dt > 0.0 and not self.config.dry_run:
-                    sleep_fn(dt)
-                previous_elapsed = float(point.elapsed_s)
                 if self._safety_halted:
                     break
         finally:
