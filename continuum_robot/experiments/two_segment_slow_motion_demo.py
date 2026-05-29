@@ -173,7 +173,11 @@ class TwoSegmentSlowMotionDemoConfig:
     auto_select_seed: bool = True
     min_waypoint_separation_norm: float = 0.40
     max_waypoint_separation_norm: float = 2.20
-    command_rate_hz: float = 10.0  # bookkeeping, NOT bus write rate
+    # For sci_fi_waypoint_relay this is the dense blend sample rate AND the
+    # bus write rate (the relay streams an interpolated path, not one write
+    # per waypoint). 15 Hz is smooth and well under the ~30-50 Hz 8-servo
+    # sync-write ceiling.
+    command_rate_hz: float = 15.0
 
     # Mode + provenance
     dry_run: bool = True  # default ON: demo is meant to be previewed first
@@ -253,7 +257,7 @@ class TwoSegmentSlowMotionDemoConfig:
             max_waypoint_separation_norm=max(
                 0.0, float(payload.get("max_waypoint_separation_norm", 2.20)),
             ),
-            command_rate_hz=max(0.5, float(payload.get("command_rate_hz", 10.0))),
+            command_rate_hz=max(0.5, float(payload.get("command_rate_hz", 15.0))),
             dry_run=bool(payload.get("dry_run", True)),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", False)),
             tracker_overlay_enabled=bool(payload.get("tracker_overlay_enabled", False)),
@@ -488,6 +492,37 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
                 expected_ids = [int(v) for v in op_context.expected_servo_ids] or expected_ids
             except Exception:
                 expected_ids = [1, 2, 3, 4, 5, 6, 7, 8]
+        # Size the per-servo tick caps to the chosen amplitude so a live relay
+        # run clears precheck on the first try. The waypoints are bounded to
+        # +/-amplitude, but the top-tendon routing compensation can almost
+        # double a top servo's displacement, so the conservative default soft
+        # cap (200 ticks) is far too low for even a 0.35 cm relay. We only ever
+        # RAISE the caps (never override a deliberately higher operator value)
+        # and the budget is derived deterministically from the amplitude.
+        if str(self.config.pattern or "").strip().lower() == "sci_fi_waypoint_relay":
+            spool_cm = float(getattr(context, "spool_diameter_cm", 2.0) or 2.0)
+            ticks_per_rev = int(getattr(context, "ticks_per_revolution", 4096) or 4096)
+            budget = int(
+                tick_budget_for_segment_amplitude_cm(
+                    float(self.config.amplitude_cm),
+                    spool_diameter_cm=spool_cm,
+                    ticks_per_rev=ticks_per_rev,
+                )
+            )
+            self.config.max_tick_delta_from_startup = max(
+                int(self.config.max_tick_delta_from_startup), budget
+            )
+            self.config.hard_max_tick_delta_from_startup = max(
+                int(self.config.hard_max_tick_delta_from_startup),
+                int(self.config.max_tick_delta_from_startup),
+            )
+            # The dense blend moves in small smooth steps; let the per-step
+            # guard reach the same budget so the relay never stutters by
+            # skipping a write mid-flow. The soft/hard caps still bound the
+            # absolute displacement.
+            self.config.max_step_ticks_per_update = max(
+                int(self.config.max_step_ticks_per_update), budget
+            )
         if not self.config.dry_run and session.context.servo_service is not None:
             self._startup_ticks_by_servo, self._startup_provenance = _resolve_startup_ticks(
                 session=session,
