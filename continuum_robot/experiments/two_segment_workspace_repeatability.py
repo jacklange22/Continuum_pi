@@ -76,6 +76,12 @@ DEFAULT_NEUTRAL_SETTLE_S = 1.0
 DEFAULT_TARGET_SETTLE_S = 1.0
 DEFAULT_CAPTURE_DWELL_S = 0.0
 DEFAULT_MAX_TRACKER_AGE_S = 0.25
+# Motion-complete verification + guaranteed post-motion settle.
+DEFAULT_MIN_POST_MOTION_SETTLE_S = 1.5  # hard floor of sit-still time AFTER motion stops
+DEFAULT_MOTION_COMPLETE_TOLERANCE_TICKS = 6  # per-servo tick change below which a servo is "stopped"
+DEFAULT_MOTION_POLL_INTERVAL_S = 0.1  # how often to poll present positions during motion
+DEFAULT_MAX_MOTION_WAIT_S = 10.0  # safety cap so a stuck servo cannot hang the run
+DEFAULT_MOTION_COMPLETE_CONSECUTIVE_POLLS = 2  # require N consecutive stable polls before declaring complete
 DEFAULT_MIN_REPEATS_PER_TARGET = 15
 DEFAULT_MAX_REJECTED_FRACTION = 0.10
 SUPPORTED_TARGET_GENERATOR_MODES = (
@@ -146,6 +152,18 @@ class TwoSegmentWorkspaceRepeatabilityConfig:
     target_settle_s: float = DEFAULT_TARGET_SETTLE_S
     capture_dwell_s: float = DEFAULT_CAPTURE_DWELL_S
     max_tracker_age_s: float = DEFAULT_MAX_TRACKER_AGE_S
+    # Motion-complete verification + guaranteed post-motion settle. With the
+    # slow servo profile a move can take longer than target_settle_s, so we
+    # poll present positions until the servos are stationary, THEN sit still
+    # for `min_post_motion_settle_s` (a hard floor) before capturing. Every
+    # accepted capture records motion_complete_detected / motion_wait_s /
+    # post_motion_settle_s as the verification.
+    verify_motion_settle: bool = True
+    min_post_motion_settle_s: float = DEFAULT_MIN_POST_MOTION_SETTLE_S
+    motion_complete_tolerance_ticks: int = DEFAULT_MOTION_COMPLETE_TOLERANCE_TICKS
+    motion_poll_interval_s: float = DEFAULT_MOTION_POLL_INTERVAL_S
+    max_motion_wait_s: float = DEFAULT_MAX_MOTION_WAIT_S
+    motion_complete_consecutive_polls: int = DEFAULT_MOTION_COMPLETE_CONSECUTIVE_POLLS
     expected_distal_tool_id: str = "0A"
     distal_tool_role: str = "distal_tip"
     require_distal_tool_visible: bool = True
@@ -190,6 +208,12 @@ class TwoSegmentWorkspaceRepeatabilityConfig:
             target_settle_s=max(0.0, float(payload.get("target_settle_s", DEFAULT_TARGET_SETTLE_S))),
             capture_dwell_s=max(0.0, float(payload.get("capture_dwell_s", DEFAULT_CAPTURE_DWELL_S))),
             max_tracker_age_s=max(0.01, float(payload.get("max_tracker_age_s", DEFAULT_MAX_TRACKER_AGE_S))),
+            verify_motion_settle=bool(payload.get("verify_motion_settle", True)),
+            min_post_motion_settle_s=max(0.0, float(payload.get("min_post_motion_settle_s", DEFAULT_MIN_POST_MOTION_SETTLE_S))),
+            motion_complete_tolerance_ticks=max(0, int(payload.get("motion_complete_tolerance_ticks", DEFAULT_MOTION_COMPLETE_TOLERANCE_TICKS))),
+            motion_poll_interval_s=max(0.001, float(payload.get("motion_poll_interval_s", DEFAULT_MOTION_POLL_INTERVAL_S))),
+            max_motion_wait_s=max(0.0, float(payload.get("max_motion_wait_s", DEFAULT_MAX_MOTION_WAIT_S))),
+            motion_complete_consecutive_polls=max(1, int(payload.get("motion_complete_consecutive_polls", DEFAULT_MOTION_COMPLETE_CONSECUTIVE_POLLS))),
             expected_distal_tool_id=str(payload.get("expected_distal_tool_id", "0A") or "0A").upper(),
             distal_tool_role=str(payload.get("distal_tool_role", "distal_tip") or "distal_tip"),
             require_distal_tool_visible=bool(payload.get("require_distal_tool_visible", True)),
@@ -473,6 +497,10 @@ class _VisitResult:
     servo_telemetry_age_s: float | None
     group_tag: str
     amplitude_cm: float
+    # Motion-complete verification (see _wait_for_motion_complete).
+    motion_complete_detected: bool = True
+    motion_wait_s: float = 0.0
+    post_motion_settle_s: float = 0.0
 
     def to_capture_row(self) -> dict[str, Any]:
         return {
@@ -506,6 +534,9 @@ class _VisitResult:
             "servo_telemetry_age_s": self.servo_telemetry_age_s,
             "group_tag": self.group_tag,
             "amplitude_cm": self.amplitude_cm,
+            "motion_complete_detected": bool(self.motion_complete_detected),
+            "motion_wait_s": float(self.motion_wait_s),
+            "post_motion_settle_s": float(self.post_motion_settle_s),
         }
 
 
@@ -821,9 +852,27 @@ class TwoSegmentWorkspaceRepeatabilityExperiment(BaseExperiment):
             command_success = False
             reject_reason = f"command_write_failed:{exc.__class__.__name__}:{exc}"
 
-        # 3. Target settle.
+        # 3. Wait for the servos to FINISH MOVING, then sit still for a
+        #    guaranteed floor before capturing. With the slow servo profile a
+        #    move can outlast target_settle_s, so a settle timed from the goal
+        #    write does not guarantee the robot is stationary. We poll present
+        #    positions until motion completes (or time out), then sleep
+        #    max(target_settle_s, min_post_motion_settle_s) while stationary.
+        motion_complete_detected = True
+        motion_wait_s = 0.0
+        post_motion_settle_s = 0.0
         if command_success:
-            session.context.sleep_fn(float(self.config.target_settle_s))
+            if bool(self.config.verify_motion_settle):
+                motion_complete_detected, motion_wait_s = self._wait_for_motion_complete(
+                    session=session,
+                    commanded_ids=commanded_ids,
+                    goal_ticks_by_servo=goals_by_servo,
+                )
+            post_motion_settle_s = max(
+                float(self.config.target_settle_s),
+                float(self.config.min_post_motion_settle_s),
+            )
+            session.context.sleep_fn(post_motion_settle_s)
             if float(self.config.capture_dwell_s) > 0.0:
                 session.context.sleep_fn(float(self.config.capture_dwell_s))
 
@@ -849,6 +898,10 @@ class TwoSegmentWorkspaceRepeatabilityExperiment(BaseExperiment):
             if dict(servo_feedback.get(str(int(sid)), {}) or {}).get("position_tick") is None
         ]
         accepted = command_success and reject_reason is None
+        # A capture taken while the servos never settled is bad data: drop it.
+        if accepted and bool(self.config.verify_motion_settle) and not motion_complete_detected:
+            accepted = False
+            reject_reason = f"motion_did_not_complete_within_{self.config.max_motion_wait_s:g}s"
         if accepted and not missing_servo_ids:
             if distal_xyz is None and bool(self.config.require_distal_tool_visible):
                 accepted = False
@@ -894,7 +947,65 @@ class TwoSegmentWorkspaceRepeatabilityExperiment(BaseExperiment):
             servo_telemetry_age_s=None,
             group_tag=str(target.group_tag),
             amplitude_cm=float(target.amplitude_cm),
+            motion_complete_detected=bool(motion_complete_detected),
+            motion_wait_s=float(motion_wait_s),
+            post_motion_settle_s=float(post_motion_settle_s),
         )
+
+    def _wait_for_motion_complete(
+        self,
+        *,
+        session: ExperimentSession,
+        commanded_ids: list[int],
+        goal_ticks_by_servo: dict[int, int],
+    ) -> tuple[bool, float]:
+        """Poll present positions until the servos stop moving (or time out).
+
+        Motion is "complete" once, for ``motion_complete_consecutive_polls``
+        consecutive polls, every commanded servo's present-position change
+        since the previous poll is within ``motion_complete_tolerance_ticks``
+        (velocity ~= 0). A servo that is already within tolerance of its goal
+        also counts as settled. Returns ``(motion_complete, elapsed_s)``.
+
+        The poll uses ``session.context.sleep_fn`` so mock/dry-run tests run
+        instantly; mock buses report static positions, so motion completes on
+        the first stability window.
+        """
+        poll_interval = float(self.config.motion_poll_interval_s)
+        tolerance = int(self.config.motion_complete_tolerance_ticks)
+        required_stable = int(self.config.motion_complete_consecutive_polls)
+        max_wait = float(self.config.max_motion_wait_s)
+        started = session.elapsed_s()
+        previous: dict[int, int] | None = None
+        stable_polls = 0
+        while True:
+            telemetry = _read_live_telemetry(session=session, servo_ids=commanded_ids, dry_run=False)
+            current: dict[int, int] = {}
+            all_present = True
+            for servo_id in commanded_ids:
+                item = telemetry.get(int(servo_id))
+                tick = getattr(item, "present_position", None) if item is not None else None
+                if tick is None:
+                    all_present = False
+                    break
+                current[int(servo_id)] = int(tick)
+            elapsed = session.elapsed_s() - started
+            if all_present and previous is not None:
+                moved = max(abs(current[sid] - previous[sid]) for sid in commanded_ids)
+                near_goal = all(
+                    abs(current[sid] - int(goal_ticks_by_servo.get(sid, current[sid]))) <= tolerance
+                    for sid in commanded_ids
+                )
+                if moved <= tolerance or near_goal:
+                    stable_polls += 1
+                    if stable_polls >= required_stable:
+                        return True, float(elapsed)
+                else:
+                    stable_polls = 0
+            previous = current if all_present else previous
+            if elapsed >= max_wait:
+                return False, float(elapsed)
+            session.context.sleep_fn(poll_interval)
 
     def _synth_dry_run_visit(
         self,
@@ -1061,6 +1172,9 @@ class TwoSegmentWorkspaceRepeatabilityExperiment(BaseExperiment):
                 "command_success": visit_result.command_success,
                 "group_tag": visit_result.group_tag,
                 "amplitude_cm": visit_result.amplitude_cm,
+                "motion_complete_detected": visit_result.motion_complete_detected,
+                "motion_wait_s": visit_result.motion_wait_s,
+                "post_motion_settle_s": visit_result.post_motion_settle_s,
             },
         )
 
@@ -1116,6 +1230,28 @@ class TwoSegmentWorkspaceRepeatabilityExperiment(BaseExperiment):
         session.set_metric("max_segment_displacement_cm", float(self.config.max_segment_displacement_cm))
         session.set_metric("neutral_settle_s", float(self.config.neutral_settle_s))
         session.set_metric("target_settle_s", float(self.config.target_settle_s))
+        # Motion-complete verification policy + observed outcomes.
+        session.set_metric("verify_motion_settle", bool(self.config.verify_motion_settle))
+        session.set_metric("min_post_motion_settle_s", float(self.config.min_post_motion_settle_s))
+        session.set_metric(
+            "effective_post_motion_settle_s",
+            max(float(self.config.target_settle_s), float(self.config.min_post_motion_settle_s)),
+        )
+        session.set_metric("motion_complete_tolerance_ticks", int(self.config.motion_complete_tolerance_ticks))
+        session.set_metric("max_motion_wait_s", float(self.config.max_motion_wait_s))
+        _motion_waits = [r.motion_wait_s for r in self._visit_results if r.command_success]
+        session.set_metric(
+            "motion_wait_summary_s",
+            {
+                "min": float(min(_motion_waits)) if _motion_waits else None,
+                "max": float(max(_motion_waits)) if _motion_waits else None,
+                "mean": float(sum(_motion_waits) / len(_motion_waits)) if _motion_waits else None,
+            },
+        )
+        session.set_metric(
+            "visits_motion_did_not_complete",
+            sum(1 for r in self._visit_results if r.command_success and not r.motion_complete_detected),
+        )
         session.set_metric("return_to_neutral_between_visits", bool(self.config.return_to_neutral_between_visits))
         session.set_metric("bottom_segment_key", context.bottom_segment_key)
         session.set_metric("top_segment_key", context.top_segment_key)

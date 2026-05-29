@@ -285,6 +285,152 @@ def test_dry_run_returns_to_neutral_between_visits_in_protocol_metadata(tmp_path
     assert metrics["return_to_neutral_between_visits"] is True
 
 
+def test_motion_settle_enforces_post_motion_floor_and_records_verification(tmp_path: Path) -> None:
+    """Live (mock) run: each accepted capture sits >= the 1.5 s floor AFTER motion completes.
+
+    With target_settle_s=1.0 and min_post_motion_settle_s=1.5, the enforced
+    post-motion settle is max(1.0, 1.5) = 1.5 s, applied only after motion
+    completes. Mock servos report static positions, so motion completes on
+    the first stability window. Every accepted capture row records
+    motion_complete_detected=True and post_motion_settle_s>=1.5.
+    """
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        service=service,
+        tracking_service=_FakeTrackingService(_tracking_snapshot(include_distal=True)),
+    )
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "target_count": 4,
+            "repeats_per_target": 1,
+            "max_segment_displacement_cm": 0.1,
+            "neutral_settle_s": 0.0,
+            "target_settle_s": 1.0,
+            "min_post_motion_settle_s": 1.5,
+            "verify_motion_settle": True,
+            "dry_run": False,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["verify_motion_settle"] is True
+    assert metrics["min_post_motion_settle_s"] == 1.5
+    assert metrics["effective_post_motion_settle_s"] == 1.5  # max(target_settle_s=1.0, floor=1.5)
+    assert metrics["visits_motion_did_not_complete"] == 0
+    assert "motion_wait_summary_s" in metrics
+    # Every accepted capture sample records the >=1.5 s sit AFTER motion completed.
+    samples = [
+        json.loads(line)
+        for line in result.paths.samples_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    accepted = [s for s in samples if s["extra"].get("capture_accepted")]
+    assert accepted, "expected at least one accepted capture"
+    for s in accepted:
+        assert s["extra"]["motion_complete_detected"] is True
+        assert float(s["extra"]["post_motion_settle_s"]) >= 1.5
+
+
+def test_motion_did_not_complete_rejects_the_capture(tmp_path: Path) -> None:
+    """If the servos never report stationary within max_motion_wait_s, the capture is dropped."""
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        service=service,
+        tracking_service=_FakeTrackingService(_tracking_snapshot(include_distal=True)),
+    )
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "target_count": 3,
+            "repeats_per_target": 1,
+            "max_segment_displacement_cm": 0.1,
+            "neutral_settle_s": 0.0,
+            "target_settle_s": 0.0,
+            "min_post_motion_settle_s": 1.5,
+            "verify_motion_settle": True,
+            "max_motion_wait_s": 0.0,  # force "never completes"
+            "motion_complete_consecutive_polls": 5,
+            "dry_run": False,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    # Run still completes; captures are rejected (not counted) with the
+    # motion-incomplete reason, so the operator never trains on mid-motion data.
+    assert result.success in (True, False)  # framework may flag low-accept; either way no crash
+    samples = [
+        json.loads(line)
+        for line in result.paths.samples_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert samples
+    assert all(s["extra"]["motion_complete_detected"] is False for s in samples)
+    assert all("motion_did_not_complete" in str(s["extra"].get("reject_reason") or "") for s in samples)
+
+
+def test_default_post_motion_settle_floor_is_1_5_seconds() -> None:
+    config = TwoSegmentWorkspaceRepeatabilityConfig.from_dict({})
+    assert config.min_post_motion_settle_s == 1.5
+    assert config.verify_motion_settle is True
+
+
+def test_gui_page_exposes_post_motion_settle_controls(tmp_path: Path) -> None:
+    """The dedicated GUI page surfaces the motion-settle verification controls.
+
+    Mirrors the single-segment ``test_factory_resolves_workspace_page``: build
+    the page through the same factory the experiment tab uses, then confirm the
+    new "Verify motion settle" checkbox and "Post-Motion Sit (floor)" spinbox
+    construct and sync to the 1.5 s defaults, and that the floor spin disables
+    when verification is turned off.
+    """
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
+    from continuum_robot.gui.widgets.experiment_pages import (
+        TwoSegmentWorkspaceRepeatabilityPage,
+        build_experiment_page,
+    )
+    from tests.test_gui_controllers import _experiment_controller
+
+    controller = _experiment_controller(tmp_path)
+    page = build_experiment_page(controller, EXPERIMENT_NAME)
+    try:
+        assert isinstance(page, TwoSegmentWorkspaceRepeatabilityPage)
+        assert hasattr(page, "verify_motion_settle_check")
+        assert hasattr(page, "min_post_motion_settle_spin")
+        # Selecting the experiment for the first time pulls config defaults.
+        page._sync_parameters_from_state(ExperimentViewState())
+        assert page.verify_motion_settle_check.isChecked() is True
+        assert page.min_post_motion_settle_spin.value() == pytest.approx(1.5)
+        assert page.min_post_motion_settle_spin.isEnabled() is True
+        # Turning verification off should disable the floor spin on next sync.
+        page.verify_motion_settle_check.setChecked(False)
+        page._sync_parameters_from_state(ExperimentViewState())
+        assert page.min_post_motion_settle_spin.isEnabled() is False
+    finally:
+        page.deleteLater()
+    _ = app
+
+
 def test_blocks_outside_dual_segment(tmp_path: Path) -> None:
     settings = _settings(mode="single_segment")
     runner = _runner(tmp_path, settings=settings)

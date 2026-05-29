@@ -6142,6 +6142,29 @@ class TwoSegmentWorkspaceRepeatabilityPage(ExperimentPageBase):
         self.target_settle_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("target_settle_s", float(value))
         )
+        self.verify_motion_settle_check = QCheckBox(
+            "Verify servos finished moving before capture (position-stillness polling)"
+        )
+        self.verify_motion_settle_check.setToolTip(
+            "With the slowed servo profile, poll present positions until every commanded "
+            "servo stops moving, then sit still for the post-motion floor below. Captures "
+            "where motion never completes are rejected."
+        )
+        self.verify_motion_settle_check.toggled.connect(
+            lambda value: self.controller.set_config_value("verify_motion_settle", bool(value))
+        )
+        self.min_post_motion_settle_spin = QDoubleSpinBox()
+        self.min_post_motion_settle_spin.setRange(0.0, 30.0)
+        self.min_post_motion_settle_spin.setDecimals(2)
+        self.min_post_motion_settle_spin.setSingleStep(0.1)
+        self.min_post_motion_settle_spin.setSuffix(" s")
+        self.min_post_motion_settle_spin.setToolTip(
+            "Guaranteed sit-still time AFTER servos finish moving (floor). The effective "
+            "post-motion dwell is max(Target Settle, this value)."
+        )
+        self.min_post_motion_settle_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("min_post_motion_settle_s", float(value))
+        )
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 2_000_000_000)
         self.seed_spin.valueChanged.connect(
@@ -6154,6 +6177,8 @@ class TwoSegmentWorkspaceRepeatabilityPage(ExperimentPageBase):
         schedule_form.addRow("Repeats per Target", self.repeats_spin)
         schedule_form.addRow("Neutral Settle", self.neutral_settle_spin)
         schedule_form.addRow("Target Settle", self.target_settle_spin)
+        schedule_form.addRow("", self.verify_motion_settle_check)
+        schedule_form.addRow("Post-Motion Sit (floor)", self.min_post_motion_settle_spin)
         schedule_form.addRow("Random Seed", self.seed_spin)
         schedule_form.addRow("", self.return_neutral_check)
         schedule_card.body_layout.addLayout(schedule_form)
@@ -6235,6 +6260,9 @@ class TwoSegmentWorkspaceRepeatabilityPage(ExperimentPageBase):
         self._set_spin(self.repeats_spin, int(config.repeats_per_target))
         self._set_double(self.neutral_settle_spin, float(config.neutral_settle_s))
         self._set_double(self.target_settle_spin, float(config.target_settle_s))
+        self._set_checkbox(self.verify_motion_settle_check, bool(config.verify_motion_settle))
+        self._set_double(self.min_post_motion_settle_spin, float(config.min_post_motion_settle_s))
+        self.min_post_motion_settle_spin.setEnabled(bool(config.verify_motion_settle))
         self._set_spin(self.seed_spin, int(config.random_seed))
         self._set_checkbox(self.return_neutral_check, bool(config.return_to_neutral_between_visits))
         self._set_line_text(self.run_label_edit, str(config.run_label or ""))
@@ -6247,7 +6275,10 @@ class TwoSegmentWorkspaceRepeatabilityPage(ExperimentPageBase):
         self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
         planned_visits = int(config.target_count) * int(config.repeats_per_target)
-        est_per_visit_s = float(config.neutral_settle_s) + float(config.target_settle_s) + 0.5
+        effective_post_motion_s = float(config.target_settle_s)
+        if bool(config.verify_motion_settle):
+            effective_post_motion_s = max(effective_post_motion_s, float(config.min_post_motion_settle_s))
+        est_per_visit_s = float(config.neutral_settle_s) + effective_post_motion_s + 0.5
         est_hours = planned_visits * est_per_visit_s / 3600.0
         self.estimate_label.setText(
             f"Estimated visits: {planned_visits}  (~{est_hours:.1f} hr at {est_per_visit_s:.2f} s/visit)"
@@ -6278,6 +6309,8 @@ class TwoSegmentWorkspaceRepeatabilityPage(ExperimentPageBase):
             config.max_tick_delta_from_startup,
             config.neutral_settle_s,
             config.target_settle_s,
+            config.verify_motion_settle,
+            config.min_post_motion_settle_s,
             config.random_seed,
             config.return_to_neutral_between_visits,
             config.run_label,
