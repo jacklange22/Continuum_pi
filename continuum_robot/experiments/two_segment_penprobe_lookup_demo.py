@@ -83,6 +83,13 @@ class TwoSegmentPenprobeLookupDemoConfig:
     tip_tracking_optional: bool = True
     block_on_map_tool_mismatch: bool = True
     allow_unknown_map_tip_tool: bool = True
+    # Allow a map that never recorded a bottom/top assignment (e.g. built from
+    # an early servo_only dataset). The servo IDs must still match and a
+    # genuine *conflicting* assignment is still blocked; this only relaxes the
+    # UNKNOWN (empty) case so the demo can run on such maps. Demo default is
+    # permissive (mirrors allow_unknown_map_tip_tool); a loud warning is
+    # recorded into the run summary.
+    allow_unknown_map_assembly: bool = True
     control_rate_hz: float = 3.0
     max_duration_s: float = 60.0
     max_iterations: int = 600
@@ -126,6 +133,7 @@ class TwoSegmentPenprobeLookupDemoConfig:
             tip_tracking_optional=bool(payload.get("tip_tracking_optional", True)),
             block_on_map_tool_mismatch=bool(payload.get("block_on_map_tool_mismatch", True)),
             allow_unknown_map_tip_tool=bool(payload.get("allow_unknown_map_tip_tool", True)),
+            allow_unknown_map_assembly=bool(payload.get("allow_unknown_map_assembly", True)),
             control_rate_hz=max(0.5, float(payload.get("control_rate_hz", 3.0))),
             max_duration_s=max(0.0, float(payload.get("max_duration_s", 60.0))),
             max_iterations=max(1, int(payload.get("max_iterations", 600))),
@@ -209,6 +217,7 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         self._last_commanded_ticks: dict[str, int] | None = None
         self._last_target_xyz: list[float] | None = None
         self._stop_reason: str | None = None
+        self._map_assembly_unknown: bool = False
         self._sustained_overcurrent_window: list[tuple[float, float]] = []  # (monotonic_s, max_load_ma)
 
     @classmethod
@@ -262,6 +271,7 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
             expected_commanded_servo_ids=[int(v) for v in context.commanded_servo_ids],
             expected_bottom_segment_key=getattr(context, "bottom_segment_key", None) or None,
             expected_top_segment_key=getattr(context, "top_segment_key", None) or None,
+            allow_unknown_map_assembly=bool(self.config.allow_unknown_map_assembly),
             absolute_min_tick=int(self.config.absolute_min_tick),
             absolute_max_tick=int(self.config.absolute_max_tick),
             extra_per_servo_tick_headroom=int(self.config.extra_per_servo_tick_headroom),
@@ -269,6 +279,19 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         self._controller = TwoSegmentWorkspaceLookupController(
             map_payload=self._map_payload, config=controller_config
         )
+        # Surface a loud, auditable warning when the map has no recorded
+        # bottom/top assignment (unknown, not conflicting). The demo still runs
+        # (servo IDs match + per-servo tick envelope + current limits guard the
+        # writes) but the operator must own the assembly assumption.
+        if self._controller.map_assembly_is_unknown:
+            self._map_assembly_unknown = True
+            if not bool(self.config.allow_unknown_map_assembly):
+                raise RuntimeError(
+                    "Workspace lookup map has no recorded bottom/top assignment "
+                    "(source dataset lacked physical_assembly). Rebuild the map from "
+                    "a run that recorded the assembly, or set "
+                    "allow_unknown_map_assembly=true to run on this map."
+                )
 
     def precheck(self, session: ExperimentSession) -> None:
         context = session.context.settings.robot.operating_context()
@@ -819,6 +842,15 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         session.set_metric("map_distal_tool_id", map_distal_tool_id)
         session.set_metric("expected_map_distal_tool_id", str(self.config.expected_map_distal_tool_id).upper())
         session.set_metric("bottom_top_assignment", dict(assembly or {}))
+        session.set_metric("map_assembly_unknown", bool(self._map_assembly_unknown))
+        session.set_metric("allow_unknown_map_assembly", bool(self.config.allow_unknown_map_assembly))
+        if self._map_assembly_unknown:
+            session.set_metric(
+                "map_assembly_unknown_warning",
+                "Map carries no bottom/top assignment (source dataset lacked physical_assembly). "
+                "Demo ran on operator-owned assembly assumption; servo IDs matched and per-servo "
+                "tick envelope + current limits guarded all writes. NOT a verified assembly match.",
+            )
         session.set_metric("operating_mode", context.operating_mode)
         session.set_metric("commanded_servo_ids", list(context.commanded_servo_ids))
         session.set_metric("run_trust_mode", self.config.run_trust_mode)

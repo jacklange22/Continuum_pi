@@ -363,6 +363,97 @@ def test_controller_blocks_when_bottom_top_mismatch(tmp_path: Path) -> None:
     assert any("bottom_segment_key_mismatch" in r for r in decision.safety_limiter_reasons)
 
 
+def _map_payload_with_assignment(assembly: dict) -> dict:
+    """Build a minimal valid map payload with a chosen bottom/top assignment."""
+    return {
+        "schema_version": MAP_SCHEMA_VERSION,
+        "metadata": {
+            "bottom_top_assignment": dict(assembly),
+            "commanded_servo_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+        },
+        "map_points": [
+            {
+                "map_index": 0,
+                "distal_xyz_robot_mm": [0.0, 0.0, 100.0],
+                "all_8_goal_ticks": {str(i): 2000 for i in range(1, 9)},
+                "commanded_servo_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                "source_run_id": "synthetic",
+                "source_sample_index": 0,
+            }
+        ],
+        "rejected_candidates": [],
+    }
+
+
+def test_controller_blocks_unknown_map_assembly_by_default() -> None:
+    """A map with no recorded bottom/top assignment blocks unless opted in.
+
+    This is the strict library default; the empty assignment is reported as
+    UNKNOWN (not a conflict) so the operator can tell the two cases apart.
+    """
+    controller = TwoSegmentWorkspaceLookupController(
+        map_payload=_map_payload_with_assignment(
+            {"bottom_segment_key": "", "top_segment_key": "", "mixed_assemblies_detected": False}
+        ),
+        config=LookupControllerConfig(
+            expected_bottom_segment_key="segment_b",
+            expected_top_segment_key="segment_a",
+        ),
+    )
+    assert controller.map_assembly_is_unknown is True
+    ok, reasons = controller.check_compatibility()
+    assert ok is False
+    assert any("bottom_segment_key_unknown_in_map" in r for r in reasons)
+    assert any("top_segment_key_unknown_in_map" in r for r in reasons)
+    # The "unknown" wording must not be confused with a real conflict.
+    assert not any("mismatch" in r for r in reasons)
+
+
+def test_controller_allows_unknown_map_assembly_when_opted_in() -> None:
+    """With allow_unknown_map_assembly, an unknown-assignment map is usable.
+
+    Mirrors the real servo_only-derived map (built from a dataset that never
+    recorded physical_assembly). Servo IDs still match and commands still fire.
+    """
+    controller = TwoSegmentWorkspaceLookupController(
+        map_payload=_map_payload_with_assignment(
+            {"bottom_segment_key": "", "top_segment_key": "", "mixed_assemblies_detected": False}
+        ),
+        config=LookupControllerConfig(
+            expected_bottom_segment_key="segment_b",
+            expected_top_segment_key="segment_a",
+            allow_unknown_map_assembly=True,
+        ),
+    )
+    ok, reasons = controller.check_compatibility()
+    assert ok is True, reasons
+    decision = controller.decide(target_xyz_robot_mm=[0.0, 0.0, 100.0])
+    assert decision.command_allowed is True
+    assert decision.all_8_goal_ticks is not None
+
+
+def test_controller_still_blocks_conflicting_assembly_when_unknown_allowed() -> None:
+    """allow_unknown_map_assembly must NOT bypass a genuine bottom/top conflict."""
+    controller = TwoSegmentWorkspaceLookupController(
+        map_payload=_map_payload_with_assignment(
+            {
+                "bottom_segment_key": "segment_a",  # swapped vs runtime
+                "top_segment_key": "segment_b",
+                "mixed_assemblies_detected": False,
+            }
+        ),
+        config=LookupControllerConfig(
+            expected_bottom_segment_key="segment_b",
+            expected_top_segment_key="segment_a",
+            allow_unknown_map_assembly=True,
+        ),
+    )
+    assert controller.map_assembly_is_unknown is False
+    ok, reasons = controller.check_compatibility()
+    assert ok is False
+    assert any("bottom_segment_key_mismatch" in r for r in reasons)
+
+
 def test_controller_extrapolation_warning_when_target_outside_workspace(tmp_path: Path) -> None:
     map_path = _build_simple_map(tmp_path)
     controller = TwoSegmentWorkspaceLookupController.load_from_path(

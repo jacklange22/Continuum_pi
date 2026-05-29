@@ -151,6 +151,137 @@ def test_demo_runs_and_writes_summary_when_target_valid(tmp_path: Path) -> None:
     assert "not_closed_loop_validated: True" in summary_text
 
 
+def _build_unknown_assembly_map_for_demo(tmp_path: Path) -> Path:
+    """Build a map from a servo_only dataset that never recorded assembly/role.
+
+    Mirrors the real big collected dataset: run_trust_mode=servo_only with an
+    empty physical_assembly + empty tracking_role_config, so the resulting map
+    has no bottom_top_assignment and no map_distal_tool_id.
+    """
+    run_dir = _write_dataset_run(
+        tmp_path,
+        sample_xyzs=[(x, y, 100.0) for x in (-10.0, 0.0, 10.0) for y in (-10.0, 0.0, 10.0)],
+        bottom_segment_key="",
+        top_segment_key="",
+        bottom_servo_ids=[],
+        top_servo_ids=[],
+        run_trust_mode="servo_only",
+        tracking_role_config={},
+    )
+    result = build_workspace_lookup_map(
+        [run_dir],
+        config=LookupMapBuildConfig(
+            voxel_size_mm=None, output_dir=tmp_path / "unknown_map", allow_lower_trust=True
+        ),
+    )
+    return result.artifact_paths["map_json"]
+
+
+def test_demo_runs_against_unknown_assembly_map_when_allowed(tmp_path: Path) -> None:
+    """The demo runs on a servo_only-derived map that lacks bottom/top assignment.
+
+    This is the production path for the big collected dataset: the map carries no
+    assembly metadata, but allow_unknown_map_assembly defaults True so the demo
+    is usable. The run records a loud unknown-assembly warning for the audit.
+    """
+    map_path = _build_unknown_assembly_map_for_demo(tmp_path)
+    runner = _runner_with_penprobe(tmp_path)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 3,
+            "max_duration_s": 5.0,
+            "control_rate_hz": 5.0,
+            "command_update_deadband_mm": 0.0,
+            "min_target_motion_mm": 0.0,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    assert result.success is True, result.message
+    metrics = result.summary.experiment_metrics
+    assert metrics["map_assembly_unknown"] is True
+    assert metrics["allow_unknown_map_assembly"] is True
+    assert metrics["map_distal_tool_id"] is None
+    assert "map_assembly_unknown_warning" in metrics
+    assert metrics["iterations"] >= 1
+
+
+def test_demo_blocks_unknown_assembly_map_when_disallowed(tmp_path: Path) -> None:
+    """Opting out of allow_unknown_map_assembly blocks the unknown-assignment map.
+
+    The genuine bottom/top safety guard is preserved as an explicit operator choice.
+    """
+    map_path = _build_unknown_assembly_map_for_demo(tmp_path)
+    runner = _runner_with_penprobe(tmp_path)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 1,
+            "max_duration_s": 2.0,
+            "control_rate_hz": 5.0,
+            "allow_servo_only_test_run": True,
+            "allow_unknown_map_assembly": False,
+        },
+    )
+    assert result.success is False
+    assert "bottom/top assignment" in (result.message or "")
+
+
+def test_demo_gui_page_exposes_map_controls_and_unknown_assembly_flag(tmp_path: Path) -> None:
+    """The demo GUI page surfaces the map-picker buttons + unknown-assembly flag.
+
+    Builds the page through the same factory the experiment tab uses, confirms the
+    new controls exist and sync to defaults, and that "Use Latest Built Map"
+    scans the maps folder and populates the path.
+    """
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
+    from continuum_robot.gui.widgets.experiment_pages import (
+        TwoSegmentPenprobeLookupDemoPage,
+        build_experiment_page,
+    )
+    from tests.test_gui_controllers import _experiment_controller
+
+    controller = _experiment_controller(tmp_path)
+    controller.project_root = tmp_path  # isolate the map scan to tmp
+    page = build_experiment_page(controller, EXPERIMENT_NAME)
+    try:
+        assert isinstance(page, TwoSegmentPenprobeLookupDemoPage)
+        assert hasattr(page, "use_latest_map_button")
+        assert hasattr(page, "browse_map_button")
+        assert hasattr(page, "allow_unknown_assembly_check")
+        page._sync_parameters_from_state(ExperimentViewState())
+        # Default config: servo_only-derived (unknown-assembly) maps are usable.
+        assert page.allow_unknown_assembly_check.isChecked() is True
+        # No maps present yet -> the button reports none found, leaves path empty.
+        page._on_use_latest_map()
+        assert "No built maps" in page.map_status_label.text()
+        assert page.map_path_edit.text().strip() == ""
+        # Drop a map artifact in the expected layout and re-scan.
+        maps_dir = (
+            tmp_path
+            / "data"
+            / "experiments"
+            / "two_segment_workspace_lookup_maps"
+            / "20260601_000000_workspace_lookup_map"
+        )
+        maps_dir.mkdir(parents=True)
+        (maps_dir / "two_segment_workspace_lookup_map.json").write_text("{}", encoding="utf-8")
+        page._on_use_latest_map()
+        assert page.map_path_edit.text().endswith("two_segment_workspace_lookup_map.json")
+        assert "Loaded latest map" in page.map_status_label.text()
+    finally:
+        page.deleteLater()
+    _ = app
+
+
 def test_demo_skips_command_when_tracker_stale(tmp_path: Path) -> None:
     map_path = _build_map_for_demo(tmp_path)
     settings = _settings()

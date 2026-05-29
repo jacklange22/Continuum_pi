@@ -55,6 +55,8 @@ case "$MODE" in
       tests/test_two_segment_collect_pose_dataset.py \
       tests/test_two_segment_repeatability.py \
       tests/test_two_segment_workspace_repeatability.py \
+      tests/test_two_segment_workspace_lookup.py \
+      tests/test_two_segment_penprobe_lookup_demo.py \
       tests/test_two_segment_modeling.py \
       tests/test_two_segment_ann_smoke.py \
       tests/test_two_segment_end_to_end.py \
