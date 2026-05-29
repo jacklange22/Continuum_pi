@@ -5779,9 +5779,13 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             "waypoint_source": str(waypoint_source),
             "auto_select_seed": bool(auto_select_seed),
             "relay_seed": int(relay_seed),
-            "profile_velocity": 45,
-            "profile_acceleration": 18,
-            "command_rate_hz": 15.0,
+            # Smoothness comes from the dense 30 Hz blended path, so the servo
+            # must NOT be throttled: profile 0 = no artificial speed/accel cap,
+            # the servo just tracks the stream. A slow profile_velocity here is
+            # what made the motion lag and stutter.
+            "profile_velocity": 0,
+            "profile_acceleration": 0,
+            "command_rate_hz": 30.0,
             "hold_at_start_s": 1.0,
             "hold_at_end_s": 1.5,
             "return_to_neutral_at_end": True,

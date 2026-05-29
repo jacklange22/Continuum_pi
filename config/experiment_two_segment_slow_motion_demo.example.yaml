@@ -25,12 +25,15 @@ early_switch_fraction: 0.72
 waypoint_source: preset_weird # preset_weird (curated) | seeded_maximin (random)
 relay_seed: 0                 # base seed for seeded_maximin
 auto_select_seed: true        # roll forward to a well-separated seed automatically
-command_rate_hz: 15.0         # dense blend sample + bus write rate
+command_rate_hz: 30.0         # dense blend sample + bus write rate (smoothness)
 
-# Slow servo profile so the physical motion stays smooth on top of the
-# software blend. The demo restores the bus defaults on finalize.
-profile_velocity: 45
-profile_acceleration: 18
+# Smoothness comes from the dense 30 Hz blended path, so the servo must NOT
+# be throttled. profile 0 = no artificial speed/accel cap; the servo just
+# tracks the stream. (A slow profile_velocity here causes laggy, stuttery
+# motion.) The demo restores the bus defaults on finalize. If you ever see
+# micro-buzz, raise profile_acceleration to ~20-40 for gentler micro-moves.
+profile_velocity: 0
+profile_acceleration: 0
 
 # Neutral holds bracketing the blend.
 hold_at_start_s: 1.0
