@@ -262,6 +262,8 @@ def test_demo_gui_page_exposes_map_controls_and_unknown_assembly_flag(tmp_path: 
         assert page.allow_unknown_assembly_check.isChecked() is True
         # The bundled demo map is wired as the default so the page works on open.
         assert "demo/maps" in page.map_path_edit.text().replace("\\", "/")
+        assert page.control_rate_spin.value() == pytest.approx(10.0)
+        assert page.control_rate_spin.maximum() == pytest.approx(25.0)
         # No *built* maps under data/experiments yet -> the scan button reports
         # none found and leaves the bundled default in place.
         page._on_use_latest_map()
@@ -365,6 +367,8 @@ def test_demo_refuses_to_run_with_explicitly_empty_map_path(tmp_path: Path) -> N
 def test_demo_default_config_uses_target_0b_and_tip_0a() -> None:
     """Polished defaults: 0B is target, 0A is tip, map should be 0A-labelled."""
     from continuum_robot.experiments.two_segment_penprobe_lookup_demo import (
+        DEFAULT_CONTROL_RATE_HZ,
+        DEFAULT_CURRENT_CHECK_INTERVAL_S,
         TwoSegmentPenprobeLookupDemoConfig,
     )
 
@@ -372,6 +376,8 @@ def test_demo_default_config_uses_target_0b_and_tip_0a() -> None:
     assert config.target_tool_id == "0B"
     assert config.tip_tool_id == "0A"
     assert config.expected_map_distal_tool_id == "0A"
+    assert config.control_rate_hz == pytest.approx(DEFAULT_CONTROL_RATE_HZ)
+    assert config.current_check_interval_s == pytest.approx(DEFAULT_CURRENT_CHECK_INTERVAL_S)
     assert config.tip_tracking_optional is True
     assert config.require_target_tool is True
     assert config.block_on_map_tool_mismatch is True
@@ -421,6 +427,57 @@ def test_demo_uses_bundled_default_map_when_none_specified(tmp_path: Path) -> No
     # The bundled 2493-point servo_only-derived map is the one that loaded.
     assert metrics["map_metadata"]["map_point_count"] == 2493
     assert metrics["map_assembly_unknown"] is True
+
+
+def test_demo_decimates_current_checks_at_fast_control_rate(tmp_path: Path) -> None:
+    """Fast penprobe response should not read all-servo current on every command tick."""
+    map_path = _build_map_for_demo(tmp_path)
+    runner = _runner_with_penprobe(tmp_path)
+
+    class _FakeClock:
+        def __init__(self) -> None:
+            self.now_s = 0.0
+
+        def monotonic(self) -> float:
+            return float(self.now_s)
+
+        def sleep(self, seconds: float) -> None:
+            self.now_s += max(0.0, float(seconds))
+
+    clock = _FakeClock()
+    runner.monotonic_fn = clock.monotonic
+    runner.sleep_fn = clock.sleep
+
+    service = runner.servo_service
+    original_read_minimal = service.read_minimal_telemetry
+    current_reads: list[list[int]] = []
+
+    def counting_read_minimal(servo_ids):
+        current_reads.append([int(v) for v in servo_ids])
+        return original_read_minimal(servo_ids)
+
+    service.read_minimal_telemetry = counting_read_minimal
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 8,
+            "max_duration_s": 2.0,
+            "control_rate_hz": 20.0,
+            "current_check_interval_s": 0.18,
+            "command_update_deadband_mm": 0.0,
+            "min_target_motion_mm": 0.0,
+            "allow_servo_only_test_run": True,
+        },
+    )
+
+    assert result.success is True, result.message
+    assert result.sample_count == 8
+    assert len(current_reads) == 2
+    assert current_reads == [[1, 2, 3, 4, 5, 6, 7, 8], [1, 2, 3, 4, 5, 6, 7, 8]]
+    metrics = result.summary.experiment_metrics
+    assert metrics["control_rate_hz"] == pytest.approx(20.0)
+    assert metrics["current_check_interval_s"] == pytest.approx(0.18)
 
 
 def test_demo_blocks_when_map_distal_tool_explicitly_differs(tmp_path: Path) -> None:

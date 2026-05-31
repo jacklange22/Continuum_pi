@@ -1,0 +1,33 @@
+Legacy ANN XYZ training summary
+
+Status: completed_early_stop
+Created: 2026-05-30T17:09:37.449887+00:00
+Dataset: 20240716_213312_kinematic_2024_07_16_21_33_12_import
+Dataset mode: legacy_kinematic_import
+Prepared samples: 16384
+Backend: cpu (Darwin 25.5.0 | arm64)
+Hidden layers: [64, 64]
+Output target: xyz
+Standardized I/O: yes
+Epochs completed: 230
+Best epoch: 200
+Best validation loss: 0.007736
+Test loss: 0.007852
+Training wall time (s): 15.389429
+Early stopped: yes (patience=30)
+Warmup estimate: 11.6 s
+
+Held-out test metrics (same split as training):
+  Loss (batch mean): 0.007852
+  Position RMSE XYZ (mm): 2.466364
+  Position RMSE XY (mm): 2.408877
+  Position RMSE Z (mm): 0.529398
+  Position error L2 mean / median / p95 / max (mm): 1.793113 / 1.356071 / 4.515230 / 18.574124
+
+Note: All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.
+
+Legacy references:
+- @references/ANN.py
+- @references/real_model_learning.py
+- @references/utils_data.py
+- @references/multi_input.py

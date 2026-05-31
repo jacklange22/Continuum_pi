@@ -766,6 +766,23 @@ def _format_stats_line(stats: ModelStats) -> str:
     )
 
 
+def _set_equal_3d_limits(ax, points: np.ndarray, *, pad_mm: float = 2.0) -> None:
+    if points.size == 0:
+        return
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    center = (mins + maxs) / 2.0
+    span = float(np.max(maxs - mins))
+    half = max(span / 2.0, 1.0) + float(pad_mm)
+    ax.set_xlim(center[0] - half, center[0] + half)
+    ax.set_ylim(center[1] - half, center[1] + half)
+    ax.set_zlim(center[2] - half, center[2] + half)
+    try:
+        ax.set_box_aspect((1, 1, 1))
+    except Exception:
+        pass
+
+
 def build_comparison_figure(
     result: ModelComparisonResult,
     *,
@@ -826,29 +843,37 @@ def build_comparison_figure(
         s=14,
         depthshade=False,
     )
+    for ax, actuals in (
+        (ax_a, result.a_actuals_xyz_mm),
+        (ax_b, result.b_actuals_xyz_mm),
+    ):
+        ax.scatter(
+            actuals[:, 0],
+            actuals[:, 1],
+            actuals[:, 2],
+            c="#111827",
+            s=7,
+            alpha=0.22,
+            depthshade=False,
+        )
 
     # Axis limits: per-panel so each workspace is shown at its natural scale.
     # When both panels share the same test data (back-compat case), the
     # limits naturally come out identical. When they don't share, forcing a
     # shared bounding box would squash one panel into a corner — instead we
-    # let each panel size itself to its own predictions + actuals.
-    pad_mm = 2.0
+    # let each panel size itself to its own predictions + actuals while keeping
+    # x/y/z scales equal inside that panel.
     for ax, preds, actuals in (
         (ax_a, result.a_predictions_xyz_mm, result.a_actuals_xyz_mm),
         (ax_b, result.b_predictions_xyz_mm, result.b_actuals_xyz_mm),
     ):
         panel_points = np.vstack([preds, actuals])
-        if panel_points.size == 0:
-            continue
-        xmin, ymin, zmin = panel_points.min(axis=0) - pad_mm
-        xmax, ymax, zmax = panel_points.max(axis=0) + pad_mm
-        ax.set_xlim(xmin, xmax)
-        ax.set_ylim(ymin, ymax)
-        ax.set_zlim(zmin, zmax)
+        _set_equal_3d_limits(ax, panel_points)
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
         ax.set_zlabel("Z (mm)")
         ax.tick_params(labelsize=8)
+        ax.view_init(elev=22, azim=-58)
 
     # Per-panel title strip: include the test-data name only when the two
     # panels diverge (the suptitle already covers the shared case).

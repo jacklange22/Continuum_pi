@@ -594,83 +594,68 @@ Migration checklist:
 
 Roll back to 57 600 the same way (DYNAMIXEL Wizard first, then config).
 
-## Workflow 12: 20-Second Sci-Fi Spine Video Demo
+## Workflow 12: Two-Segment Motion Demo
 
 Demo-only open-loop waypoint relay for slide-video recordings. The
 relay sends a new waypoint before the spine fully settles at the
-previous one, producing a "drift, almost reach, change my mind"
-motion that reads as creepy / organic on camera. NOT data, NOT
-closed-loop, NOT thesis evidence — every artifact stamps
+previous one, producing a continuous presentation motion on camera.
+NOT data, NOT closed-loop, NOT thesis evidence — every artifact stamps
 `demo_only=True`, `closed_loop_control=False`,
 `valid_for_model_training=False`,
 `valid_for_thesis_repeatability=False`.
 
 ### One-click preset
 
-GUI: Experiments → **Two-Segment Slow Motion Demo** → click **20s
-Sci-Fi Spine** under "Presets". That fills:
+GUI: Experiments → **Two-Segment Slow Motion Demo** → click **Curated
+Relay** under "Pick a demo". That fills the bounded waypoint-relay
+configuration and leaves a speed slider plus dry-run/live toggle as the
+main operator controls.
 
-| Field | Value |
-|---|---|
-| Pattern | `sci_fi_waypoint_relay` |
-| Video duration | 20.0 s |
-| Waypoint count | 9 |
-| Amplitude | 0.35 cm |
-| Early switch fraction | 0.72 (metadata; relay timing comes from duration/count) |
-| Waypoint source | `preset_weird` |
-| Auto-select seed | true |
-| Profile velocity | 45 |
-| Profile acceleration | 18 |
-| Command rate (bookkeeping) | 10 Hz |
-| Ramp in / out | 1.0 / 1.0 s |
-| Hold start / end | 1.0 / 1.5 s |
-| Dry run | **true** (operator flips off to record) |
+Curated Relay sets an 18-waypoint relay, about 14 s per loop by
+default, `amplitude_cm=0.50`, early-switch blending, uncapped servo
+profile velocity/acceleration, and a dense 50 Hz command stream. The
+speed slider changes total loop duration. The run-mode checkbox is the
+main safety switch: check dry-run for preview; un-check it only for the
+live recording.
 
 ### Recommended first live settings
 
-Always run dry-run first. The preview card shows waypoint count,
-seconds per waypoint, advisory warnings. First live pass should be
-the conservative defaults above (0.35 cm). If you want the smallest
-possible safe motion, drop amplitude to 0.10 or 0.25 cm before
-trying 0.35.
+Always run dry-run first. The preview card shows waypoint count, total
+duration, command rate, and advisory warnings. First live pass should
+use the curated preset at default speed; slow it down with the slider if
+the rig is not moving cleanly.
 
 ### Tuning guide
 
 If motion looks **too slow**:
-- raise `profile_velocity` (try 60 → 90, watch current)
-- reduce `video_duration_s` (try 15 s)
-- raise amplitude carefully (≤ 0.50 cm)
+- move the speed slider right
+- use **Random Relay** for a different path with the same bounds
 
 If motion looks **too jerky** or hits the soft tick cap:
-- lower amplitude (try 0.25 cm)
-- lower `profile_velocity` (try 30)
-- raise `profile_acceleration` carefully so each new goal ramps in
-  smoothly
-- try a different `relay_seed` (auto-select usually picks a good one
-  but specific seeds can have one short segment)
+- move the speed slider left
+- return to the curated relay before changing low-level YAML values
+- check the latest output bundle for blocked writes and current/load peaks
 
 If motion **pauses too long** between drifts (the relay should
 overlap, not stop and start):
-- lower `profile_velocity` so the spine is genuinely mid-motion when
-  the next command arrives
-- raise `waypoint_count` (try 12) to shorten each segment
-- enable `auto_select_seed` so consecutive waypoints aren't clustered
+- move the speed slider right
+- use **Random Relay** to try a different waypoint spread
 
 ### Hardware checklist (every live run)
 
 - operating mode: `dual_segment`
 - all-8 startup artifact accepted (`two_segment_startup_validation` ran)
 - bottom/top physical assembly confirmed
-- bus at **1 Mbps** for cleaner profile-velocity behaviour
+- bus at **1 Mbps** for cleaner all-8 command streaming
 - current / load proxy visible on the GUI
 - dry-run preview rendered without warnings
-- first live pass at **0.10 or 0.25 cm** before 0.35
+- first live pass uses the curated preset at default speed
 - stop button reachable; hand on the e-stop
 
 ### Output bundle
 
-Each run writes a normal slow-motion-demo bundle plus four
-sci-fi-specific files:
+Each run writes a normal slow-motion-demo bundle plus relay-specific
+files:
 
 - `sci_fi_waypoint_relay_summary.txt` — operator-facing summary
 - `waypoints.json` — resolved 4D waypoint list + resolved seed

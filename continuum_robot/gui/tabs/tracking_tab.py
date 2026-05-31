@@ -43,11 +43,10 @@ class TrackingTab(QWidget):
             )
         )
 
-        self.title_label = QLabel("Tracking & Pivot")
+        self.title_label = QLabel("Tracking")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
-            "Connect Aurora, validate tracker health, confirm 0A and 0B visibility and rigid-valid transforms, "
-            "then collect, solve, review, and accept the staged 0B pivot calibration before moving to Registration."
+            "Connect Aurora, validate 0A/0B, then accept the 0B tip calibration."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
@@ -63,14 +62,14 @@ class TrackingTab(QWidget):
         self.tools_label = QLabel("none")
         self.validation_report_label = QLabel("none")
         self.validation_report_label.setWordWrap(True)
-        self.handoff_label = QLabel("Registration will unlock after tracker validation and accepted tip review.")
+        self.handoff_label = QLabel("Registration unlocks after tracker + tip are ready.")
         self.handoff_label.setWordWrap(True)
 
-        self.connect_button = QPushButton("Connect Tracker")
+        self.connect_button = QPushButton("Connect")
         self.connect_button.setProperty("role", "primary")
-        self.disconnect_button = QPushButton("Disconnect Tracker")
+        self.disconnect_button = QPushButton("Disconnect")
         self.disconnect_button.setProperty("variant", "ghost")
-        self.validate_button = QPushButton("Run Tracker Diagnostic")
+        self.validate_button = QPushButton("Run Diagnostic")
         self.validate_button.setProperty("variant", "ghost")
         self.rescan_button = QPushButton("Rescan Ports")
         self.rescan_button.setProperty("variant", "ghost")
@@ -79,15 +78,15 @@ class TrackingTab(QWidget):
         self.validate_button.clicked.connect(self._validate_tracker)
         self.rescan_button.clicked.connect(self._rescan_ports)
 
-        readiness_box = QGroupBox("Tracker Readiness")
+        readiness_box = QGroupBox("Tracker")
         readiness_layout = QVBoxLayout(readiness_box)
         readiness_form = QFormLayout()
-        readiness_form.addRow("Tracker port", self.tracker_port_combo)
+        readiness_form.addRow("Port", self.tracker_port_combo)
         readiness_form.addRow("Connection", self.connection_label)
         readiness_form.addRow("Verdict", self.verdict_label)
-        readiness_form.addRow("Tool visibility", self.tools_label)
-        readiness_form.addRow("Validation artifact", self.validation_report_label)
-        readiness_form.addRow("Registration handoff", self.handoff_label)
+        readiness_form.addRow("Tools", self.tools_label)
+        readiness_form.addRow("Report", self.validation_report_label)
+        readiness_form.addRow("Registration", self.handoff_label)
         readiness_layout.addLayout(readiness_form)
         readiness_buttons = QHBoxLayout()
         readiness_buttons.addWidget(self.connect_button)
@@ -106,37 +105,37 @@ class TrackingTab(QWidget):
         self.plot_widget.setMinimumHeight(420)
         self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        live_box = QGroupBox("Live Tools")
+        live_box = QGroupBox("Live")
         live_layout = QVBoxLayout(live_box)
         live_layout.addWidget(self.plot_widget, 5)
         live_layout.addWidget(self.tools_table, 2)
 
         self.pivot_status_label = QLabel("idle")
         self.pivot_motion_label = QLabel("—")
-        self.pivot_last_run_label = QLabel("No pivot run recorded yet.")
+        self.pivot_last_run_label = QLabel("No run yet.")
         self.pivot_last_run_label.setWordWrap(True)
         self.pivot_tip_path_label = QLabel("none")
         self.pivot_tip_path_label.setWordWrap(True)
 
-        self._pivot_start_button = QPushButton("Start 0B Collection")
+        self._pivot_start_button = QPushButton("Start 0B")
         self._pivot_start_button.setProperty("role", "primary")
-        self._pivot_stop_button = QPushButton("Stop Collection")
-        self._pivot_solve_button = QPushButton("Solve Pivot Calibration")
-        self._pivot_accept_button = QPushButton("Accept Tip File")
-        self._pivot_reset_button = QPushButton("Reset Pivot Review")
+        self._pivot_stop_button = QPushButton("Stop")
+        self._pivot_solve_button = QPushButton("Solve")
+        self._pivot_accept_button = QPushButton("Accept Tip")
+        self._pivot_reset_button = QPushButton("Reset")
         self._pivot_start_button.clicked.connect(self._start_pivot)
         self._pivot_stop_button.clicked.connect(self._stop_pivot)
         self._pivot_solve_button.clicked.connect(self._solve_pivot)
         self._pivot_accept_button.clicked.connect(self._accept_pivot)
         self._pivot_reset_button.clicked.connect(self._reset_pivot)
 
-        pivot_box = QGroupBox("0B Pivot Calibration")
+        pivot_box = QGroupBox("0B Pivot")
         pivot_layout = QVBoxLayout(pivot_box)
         pivot_form = QFormLayout()
         pivot_form.addRow("Status", self.pivot_status_label)
-        pivot_form.addRow("Motion range", self.pivot_motion_label)
+        pivot_form.addRow("Motion", self.pivot_motion_label)
         pivot_form.addRow("Last run", self.pivot_last_run_label)
-        pivot_form.addRow("Current tip transform", self.pivot_tip_path_label)
+        pivot_form.addRow("Tip file", self.pivot_tip_path_label)
         pivot_layout.addLayout(pivot_form)
         pivot_buttons = QHBoxLayout()
         pivot_buttons.addWidget(self._pivot_start_button)
@@ -183,16 +182,14 @@ class TrackingTab(QWidget):
         )
         self.verdict_label.setText(self._format_verdict(workflow_state))
         self.tools_label.setText(
-            f"0A={'tracked' if workflow_state.tool_0a_visible else workflow_state.tool_0a_status}, "
-            f"0B={'tracked' if workflow_state.tool_0b_visible else workflow_state.tool_0b_status}"
+            f"0A {'tracked' if workflow_state.tool_0a_visible else workflow_state.tool_0a_status} | "
+            f"0B {'tracked' if workflow_state.tool_0b_visible else workflow_state.tool_0b_status}"
         )
         self.validation_report_label.setText(workflow_state.validation_report_path or "none")
         if workflow_state.registration_blockers:
             self.handoff_label.setText("Registration blocked: " + " ".join(workflow_state.registration_blockers))
         else:
-            self.handoff_label.setText(
-                "Registration is ready. Move to the Registration tab to capture points, solve, review, and save."
-            )
+            self.handoff_label.setText("Ready for Registration.")
 
         self.tools_table.setRowCount(len(live_state.tools))
         for row, tool_id in enumerate(sorted(live_state.tools)):
@@ -277,7 +274,7 @@ class TrackingTab(QWidget):
         if ws.pivot_status == "solve_failed":
             return f"Solve failed{rmse_text} — see Details"
         if ws.pivot_pending_accept:
-            return f"Solved{rmse_text} · Accept Tip File to save"
+            return f"Solved{rmse_text} · Accept Tip to save"
         if ws.pivot_status == "accepted":
             return f"Accepted{rmse_text}"
         if ws.pivot_live_sample_count > 0:
@@ -314,7 +311,7 @@ class TrackingTab(QWidget):
             return timestamp
         if rmse is not None:
             return f"RMSE = {rmse:.3f} mm"
-        return "No pivot run recorded yet."
+        return "No run yet."
 
     def _format_tip_in_use(self, ws: TrackerMvpViewState) -> str:
         path = ws.pivot_tip_path or "none"

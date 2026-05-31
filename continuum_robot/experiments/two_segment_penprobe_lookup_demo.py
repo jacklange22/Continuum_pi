@@ -23,11 +23,13 @@ Safety contract:
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import csv
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
@@ -60,6 +62,9 @@ BLOCK_MESSAGE = (
 # to the live penprobe with no manual setup. Override via the GUI map picker or
 # `map_path` to use a freshly-built map.
 DEFAULT_BUNDLED_MAP_PATH = "continuum_robot/demo/maps/two_segment_workspace_lookup_map.json"
+DEFAULT_CONTROL_RATE_HZ = 10.0
+MAX_CONTROL_RATE_HZ = 25.0
+DEFAULT_CURRENT_CHECK_INTERVAL_S = 0.25
 
 
 @dataclass
@@ -97,7 +102,8 @@ class TwoSegmentPenprobeLookupDemoConfig:
     # permissive (mirrors allow_unknown_map_tip_tool); a loud warning is
     # recorded into the run summary.
     allow_unknown_map_assembly: bool = True
-    control_rate_hz: float = 3.0
+    control_rate_hz: float = DEFAULT_CONTROL_RATE_HZ
+    current_check_interval_s: float = DEFAULT_CURRENT_CHECK_INTERVAL_S
     max_duration_s: float = 60.0
     max_iterations: int = 600
     command_update_deadband_mm: float = 1.0
@@ -141,7 +147,14 @@ class TwoSegmentPenprobeLookupDemoConfig:
             block_on_map_tool_mismatch=bool(payload.get("block_on_map_tool_mismatch", True)),
             allow_unknown_map_tip_tool=bool(payload.get("allow_unknown_map_tip_tool", True)),
             allow_unknown_map_assembly=bool(payload.get("allow_unknown_map_assembly", True)),
-            control_rate_hz=max(0.5, float(payload.get("control_rate_hz", 3.0))),
+            control_rate_hz=min(
+                MAX_CONTROL_RATE_HZ,
+                max(0.5, float(payload.get("control_rate_hz", DEFAULT_CONTROL_RATE_HZ))),
+            ),
+            current_check_interval_s=max(
+                0.05,
+                float(payload.get("current_check_interval_s", DEFAULT_CURRENT_CHECK_INTERVAL_S)),
+            ),
             max_duration_s=max(0.0, float(payload.get("max_duration_s", 60.0))),
             max_iterations=max(1, int(payload.get("max_iterations", 600))),
             command_update_deadband_mm=max(0.0, float(payload.get("command_update_deadband_mm", 1.0))),
@@ -226,6 +239,9 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         self._stop_reason: str | None = None
         self._map_assembly_unknown: bool = False
         self._sustained_overcurrent_window: list[tuple[float, float]] = []  # (monotonic_s, max_load_ma)
+        self._last_current_check_s: float | None = None
+        self._cached_max_current_proxy_ma: float | None = None
+        self._cached_tracker_freshness_s: float | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "TwoSegmentPenprobeLookupDemoExperiment":
@@ -339,54 +355,121 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         context = session.context.settings.robot.operating_context()
         loop_period_s = 1.0 / max(0.5, float(self.config.control_rate_hz))
         run_started_s = session.elapsed_s()
+        next_iteration_due_s = float(run_started_s)
         iteration = 0
-        last_tracker_age = None
-        while True:
-            session.raise_if_stop_requested()
-            iteration += 1
-            now_s = session.elapsed_s()
-            if iteration > int(self.config.max_iterations):
-                self._stop_reason = "max_iterations_reached"
-                break
-            if float(self.config.max_duration_s) > 0 and (now_s - run_started_s) > float(self.config.max_duration_s):
-                self._stop_reason = "max_duration_reached"
-                break
+        servo_service = session.context.servo_service
+        live_bus_lock = (
+            not bool(self.config.dry_run)
+            and servo_service is not None
+            and bool(getattr(servo_service, "is_connected", False))
+            and callable(getattr(servo_service, "exclusive_bus_operation", None))
+        )
+        bus_owner_cm = (
+            servo_service.exclusive_bus_operation(
+                owner="two_segment_penprobe_lookup_demo",
+                reason=(
+                    f"0B penprobe lookup chase at {float(self.config.control_rate_hz):.1f} Hz "
+                    "with decimated current checks"
+                ),
+            )
+            if live_bus_lock
+            else nullcontext()
+        )
+        bus_entered = False
+        try:
+            bus_owner_cm.__enter__()
+            bus_entered = True
+            while True:
+                session.raise_if_stop_requested()
+                iteration += 1
+                now_s = session.elapsed_s()
+                if iteration > int(self.config.max_iterations):
+                    self._stop_reason = "max_iterations_reached"
+                    break
+                if float(self.config.max_duration_s) > 0 and (now_s - run_started_s) > float(self.config.max_duration_s):
+                    self._stop_reason = "max_duration_reached"
+                    break
 
-            target_xyz, target_age, tracker_stale = self._read_tool_pose(
-                session=session, tool_id=str(self.config.target_tool_id)
-            )
-            # Tip (0A) is optional: never blocks command writes, just
-            # reported for operator situational awareness + trace audit.
-            tip_xyz, tip_age, _tip_stale = self._read_tool_pose(
-                session=session, tool_id=str(self.config.tip_tool_id)
-            )
-            tip_tracking_available = tip_xyz is not None
-            decision = self._controller.decide(
-                target_xyz_robot_mm=target_xyz,
-                tracker_stale=tracker_stale,
-            )
-            tip_to_target = (
-                float(np.linalg.norm(np.asarray(tip_xyz) - np.asarray(target_xyz)))
-                if tip_xyz is not None and target_xyz is not None
-                else None
-            )
-            tip_to_selected = (
-                float(
-                    np.linalg.norm(
-                        np.asarray(tip_xyz) - np.asarray(decision.selected_point_xyz_robot_mm)
-                    )
+                target_xyz, target_age, tracker_stale = self._read_tool_pose(
+                    session=session, tool_id=str(self.config.target_tool_id)
                 )
-                if tip_xyz is not None and decision.selected_point_xyz_robot_mm is not None
-                else None
-            )
-            max_current_ma, tracker_freshness_s = self._max_current_proxy(session=session)
-            sustained_stop = self._update_sustained_overcurrent(now_s=now_s, max_current_ma=max_current_ma)
-            command_sent = False
-            command_skip_reason: str | None = None
-            commanded_ticks_for_row: dict[str, int] | None = None
-            if sustained_stop:
-                command_skip_reason = "sustained_overcurrent_stop"
-                self._stop_reason = "sustained_overcurrent_stop"
+                # Tip (0A) is optional: never blocks command writes, just
+                # reported for operator situational awareness + trace audit.
+                tip_xyz, tip_age, _tip_stale = self._read_tool_pose(
+                    session=session, tool_id=str(self.config.tip_tool_id)
+                )
+                tip_tracking_available = tip_xyz is not None
+                decision = self._controller.decide(
+                    target_xyz_robot_mm=target_xyz,
+                    tracker_stale=tracker_stale,
+                )
+                tip_to_target = (
+                    float(np.linalg.norm(np.asarray(tip_xyz) - np.asarray(target_xyz)))
+                    if tip_xyz is not None and target_xyz is not None
+                    else None
+                )
+                tip_to_selected = (
+                    float(
+                        np.linalg.norm(
+                            np.asarray(tip_xyz) - np.asarray(decision.selected_point_xyz_robot_mm)
+                        )
+                    )
+                    if tip_xyz is not None and decision.selected_point_xyz_robot_mm is not None
+                    else None
+                )
+                max_current_ma, tracker_freshness_s, current_sample_fresh = self._max_current_proxy(
+                    session=session,
+                    now_s=now_s,
+                )
+                sustained_stop = (
+                    self._update_sustained_overcurrent(now_s=now_s, max_current_ma=max_current_ma)
+                    if current_sample_fresh
+                    else False
+                )
+                command_sent = False
+                command_skip_reason: str | None = None
+                commanded_ticks_for_row: dict[str, int] | None = None
+                if sustained_stop:
+                    command_skip_reason = "sustained_overcurrent_stop"
+                    self._stop_reason = "sustained_overcurrent_stop"
+                    self._record_trace_row(
+                        iteration=iteration,
+                        monotonic_time_s=now_s,
+                        target_xyz=target_xyz,
+                        target_age=target_age,
+                        tip_xyz=tip_xyz,
+                        tip_age=tip_age,
+                        tip_tracking_available=bool(tip_tracking_available),
+                        tip_to_target_distance_mm=tip_to_target,
+                        tip_to_selected_map_distance_mm=tip_to_selected,
+                        decision=decision,
+                        command_sent=command_sent,
+                        command_skip_reason=command_skip_reason,
+                        commanded_ticks=commanded_ticks_for_row,
+                        max_current=max_current_ma,
+                        tracker_freshness=tracker_freshness_s,
+                    )
+                    break
+                if not decision.command_allowed:
+                    command_skip_reason = decision.block_reason or "command_not_allowed"
+                else:
+                    # Deadband: skip the write if neither the target nor the chosen
+                    # ticks have changed materially.
+                    if not self._target_moved_enough(target_xyz):
+                        command_skip_reason = "target_within_deadband"
+                    elif self._ticks_within_deadband(decision.all_8_goal_ticks):
+                        command_skip_reason = "command_within_deadband"
+                    else:
+                        try:
+                            commanded_ticks_for_row = self._issue_goal_ticks(
+                                session=session, decision=decision
+                            )
+                            command_sent = True
+                            self._last_commanded_ticks = dict(commanded_ticks_for_row)
+                            self._last_target_xyz = list(decision.target_xyz_robot_mm)
+                        except Exception as exc:
+                            command_skip_reason = f"write_failed:{exc.__class__.__name__}:{exc}"
+                            self._stop_reason = "write_failed"
                 self._record_trace_row(
                     iteration=iteration,
                     monotonic_time_s=now_s,
@@ -404,78 +487,46 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                     max_current=max_current_ma,
                     tracker_freshness=tracker_freshness_s,
                 )
-                break
-            if not decision.command_allowed:
-                command_skip_reason = decision.block_reason or "command_not_allowed"
-            else:
-                # Deadband: skip the write if neither the target nor the chosen
-                # ticks have changed materially.
-                if not self._target_moved_enough(target_xyz):
-                    command_skip_reason = "target_within_deadband"
-                elif self._ticks_within_deadband(decision.all_8_goal_ticks):
-                    command_skip_reason = "command_within_deadband"
-                else:
-                    try:
-                        commanded_ticks_for_row = self._issue_goal_ticks(
-                            session=session, decision=decision
-                        )
-                        command_sent = True
-                        self._last_commanded_ticks = dict(commanded_ticks_for_row)
-                        self._last_target_xyz = list(decision.target_xyz_robot_mm)
-                    except Exception as exc:
-                        command_skip_reason = f"write_failed:{exc.__class__.__name__}:{exc}"
-                        self._stop_reason = "write_failed"
-            self._record_trace_row(
-                iteration=iteration,
-                monotonic_time_s=now_s,
-                target_xyz=target_xyz,
-                target_age=target_age,
-                tip_xyz=tip_xyz,
-                tip_age=tip_age,
-                tip_tracking_available=bool(tip_tracking_available),
-                tip_to_target_distance_mm=tip_to_target,
-                tip_to_selected_map_distance_mm=tip_to_selected,
-                decision=decision,
-                command_sent=command_sent,
-                command_skip_reason=command_skip_reason,
-                commanded_ticks=commanded_ticks_for_row,
-                max_current=max_current_ma,
-                tracker_freshness=tracker_freshness_s,
-            )
-            # Emit a lightweight per-iteration ExperimentTimeseriesSample so
-            # the framework's sample-count gate is satisfied AND the run
-            # appears in standard data-tab summaries. The sample carries the
-            # same data as the trace row so downstream tools see one canonical
-            # row stream per iteration.
-            session.add_sample(
-                self._build_session_sample(
-                    session=session,
-                    iteration=iteration,
-                    target_xyz=target_xyz,
-                    tip_xyz=tip_xyz,
-                    tip_tracking_available=bool(tip_tracking_available),
-                    decision=decision,
-                    command_sent=command_sent,
-                    command_skip_reason=command_skip_reason,
-                    commanded_ticks=commanded_ticks_for_row,
-                    max_current=max_current_ma,
-                    tracker_freshness=tracker_freshness_s,
+                # Emit a lightweight per-iteration ExperimentTimeseriesSample so
+                # the framework's sample-count gate is satisfied AND the run
+                # appears in standard data-tab summaries. The sample carries the
+                # same data as the trace row so downstream tools see one canonical
+                # row stream per iteration.
+                session.add_sample(
+                    self._build_session_sample(
+                        session=session,
+                        iteration=iteration,
+                        target_xyz=target_xyz,
+                        tip_xyz=tip_xyz,
+                        tip_tracking_available=bool(tip_tracking_available),
+                        decision=decision,
+                        command_sent=command_sent,
+                        command_skip_reason=command_skip_reason,
+                        commanded_ticks=commanded_ticks_for_row,
+                        max_current=max_current_ma,
+                        tracker_freshness=tracker_freshness_s,
+                    )
                 )
-            )
-            if self._stop_reason:
-                break
-            session.update_progress(
-                iteration,
-                int(self.config.max_iterations),
-                {
-                    "phase": "penprobe_lookup",
-                    "command_sent": int(command_sent),
-                    "nearest_distance_mm": (
-                        round(float(decision.nearest_distance_mm), 3) if decision.nearest_distance_mm is not None else None
-                    ),
-                },
-            )
-            session.context.sleep_fn(loop_period_s)
+                if self._stop_reason:
+                    break
+                session.update_progress(
+                    iteration,
+                    int(self.config.max_iterations),
+                    {
+                        "phase": "penprobe_lookup",
+                        "command_sent": int(command_sent),
+                        "nearest_distance_mm": (
+                            round(float(decision.nearest_distance_mm), 3) if decision.nearest_distance_mm is not None else None
+                        ),
+                    },
+                )
+                next_iteration_due_s += loop_period_s
+                sleep_s = next_iteration_due_s - session.elapsed_s()
+                if sleep_s > 0.0:
+                    session.context.sleep_fn(sleep_s)
+        finally:
+            if bus_entered:
+                bus_owner_cm.__exit__(*sys.exc_info())
         if self._stop_reason is None:
             self._stop_reason = "operator_stop"
         self._record_metrics(session=session, context=context)
@@ -583,18 +634,36 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         except (KeyError, ValueError, TypeError):
             return False
 
-    def _max_current_proxy(self, *, session: ExperimentSession) -> tuple[float | None, float | None]:
+    def _max_current_proxy(
+        self,
+        *,
+        session: ExperimentSession,
+        now_s: float,
+    ) -> tuple[float | None, float | None, bool]:
+        """Return latest current proxy, tracker freshness, and whether current was freshly sampled."""
+        tracker_freshness = self._read_tracker_freshness(session=session)
+        self._cached_tracker_freshness_s = tracker_freshness
+        if (
+            self._last_current_check_s is not None
+            and (float(now_s) - float(self._last_current_check_s)) < float(self.config.current_check_interval_s)
+        ):
+            return self._cached_max_current_proxy_ma, tracker_freshness, False
+
         servo_service = session.context.servo_service
         if servo_service is None or not bool(getattr(servo_service, "is_connected", False)):
-            return None, None
+            return None, tracker_freshness, False
+        self._last_current_check_s = float(now_s)
         try:
-            telemetry = servo_service.read_live_telemetry([int(v) for v in range(1, 9)])
+            reader = getattr(servo_service, "read_minimal_telemetry", None) or servo_service.read_live_telemetry
+            telemetry = reader([int(v) for v in range(1, 9)])
         except Exception:
-            return None, None
+            self._cached_max_current_proxy_ma = None
+            return None, tracker_freshness, True
         max_load_ma: float | None = None
-        tracker_freshness: float | None = None
         for item in telemetry.values():
             load = getattr(item, "present_current_ma", None)
+            if load is None:
+                load = getattr(item, "current_ma", None)
             if load is None:
                 continue
             try:
@@ -603,6 +672,11 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                 continue
             if max_load_ma is None or val > max_load_ma:
                 max_load_ma = val
+        self._cached_max_current_proxy_ma = max_load_ma
+        return max_load_ma, tracker_freshness, True
+
+    def _read_tracker_freshness(self, *, session: ExperimentSession) -> float | None:
+        tracker_freshness: float | None = None
         try:
             tracking_service = session.context.tracking_service
             if tracking_service is not None:
@@ -614,7 +688,7 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                 tracker_freshness = getattr(snapshot, "tracker_data_age_s", None)
         except Exception:
             pass
-        return max_load_ma, tracker_freshness
+        return float(tracker_freshness) if tracker_freshness is not None else None
 
     def _update_sustained_overcurrent(self, *, now_s: float, max_current_ma: float | None) -> bool:
         if max_current_ma is None:
@@ -820,6 +894,8 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         session.set_metric("commands_sent", commands_sent)
         session.set_metric("commands_skipped_in_deadband", accepted_iterations - commands_sent)
         session.set_metric("commands_blocked", sum(1 for row in self._trace_rows if row.block_reason))
+        session.set_metric("control_rate_hz", float(self.config.control_rate_hz))
+        session.set_metric("current_check_interval_s", float(self.config.current_check_interval_s))
         session.set_metric(
             "nearest_distance_summary_mm",
             {
@@ -935,6 +1011,8 @@ def _write_summary_text(path: Path, metrics: dict[str, Any]) -> None:
         f"commands_sent: {metrics.get('commands_sent', 0)}",
         f"commands_skipped_in_deadband: {metrics.get('commands_skipped_in_deadband', 0)}",
         f"commands_blocked: {metrics.get('commands_blocked', 0)}",
+        f"control_rate_hz: {metrics.get('control_rate_hz')}",
+        f"current_check_interval_s: {metrics.get('current_check_interval_s')}",
         "",
         "Nearest-map distance summary (mm) — 0B → selected map point:",
         f"  min:  {(metrics.get('nearest_distance_summary_mm') or {}).get('min')}",
@@ -1085,7 +1163,9 @@ def _write_path_figure(path: Path, trace_rows: list[_DemoTraceRow], create_figur
         ax.plot([t[0] for t in tips], [t[1] for t in tips], "-^", markersize=2, label=tip_label, alpha=0.6)
     style_axes(ax, title="Penprobe Lookup Demo Path (DEMO ONLY)", xlabel="X (mm)", ylabel="Y (mm)")
     ax.set_aspect("equal", adjustable="datalim")
-    ax.legend(loc="best", fontsize=8)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles and labels:
+        ax.legend(loc="best", fontsize=8)
     save_figure(fig, path)
 
 

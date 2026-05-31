@@ -737,6 +737,15 @@ class TrackerMvpController:
             self.state.status_message = self._default_status_message()
         return self.state
 
+    def shutdown(self) -> None:
+        if self._pivot_collection_active:
+            self._stop_pivot_collection(silent=True)
+            return
+        thread = self._pivot_thread
+        self._pivot_stop_event.set()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+
     def _build_workflow_steps(self) -> list[WorkflowStepState]:
         steps: list[WorkflowStepState] = []
 

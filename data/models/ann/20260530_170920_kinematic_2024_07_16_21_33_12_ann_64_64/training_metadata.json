@@ -1,0 +1,193 @@
+{
+  "schema_version": "1.0",
+  "artifact_kind": "legacy_ann_xyz_v1",
+  "created_at_utc": "2026-05-30T17:09:37.449887+00:00",
+  "status": "completed_early_stop",
+  "legacy_references": [
+    "@references/ANN.py",
+    "@references/real_model_learning.py",
+    "@references/utils_data.py",
+    "@references/multi_input.py",
+    "@references/hysteresis_model_learning.py"
+  ],
+  "dataset": {
+    "path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20240716_213312_kinematic_2024_07_16_21_33_12_import",
+    "run_id": "legacy_kinematic_20240716_213312",
+    "run_name": "20240716_213312_kinematic_2024_07_16_21_33_12_import",
+    "timestamp_utc": "2024-07-16T21:33:12+00:00",
+    "dataset_mode": "legacy_kinematic_import",
+    "dataset_mode_summary": "Imported continuum_jack kinematic .dat for local ANN training.",
+    "sample_count": 16384,
+    "accepted_count": 16384,
+    "rejected_count": 0,
+    "full_pose_available": true,
+    "sequential_context_available": true,
+    "run_label": "legacy_kinematic_2024_07_16",
+    "dataset_tag": "legacy_import",
+    "trust_summary": "runtime tip legacy_import, pretension unknown",
+    "runtime_tip_summary": "legacy_file (legacy_import)",
+    "pretension_summary": "legacy_file (unknown)",
+    "filtered_reason_counts": {},
+    "prepared_sample_count": 16384,
+    "source_run_valid_for_model_training": true,
+    "source_run_model_training_validity_status": "warning_valid",
+    "source_run_model_training_validity_reason": "legacy_dat_imported_for_requested_training",
+    "source_run_model_training_hard_invalidation_reasons": [],
+    "source_run_model_training_warnings": [
+      "Imported legacy continuum_jack .dat; not a current thesis-trusted capture bundle."
+    ],
+    "ann_training_category": "Trainable with warnings",
+    "ann_training_blocking_reasons": [],
+    "ann_training_warnings": [
+      "Imported legacy continuum_jack .dat; not a current thesis-trusted capture bundle."
+    ],
+    "target_valid_sample_count": 16384,
+    "complete_training_row_count": 16384,
+    "modeling_export_row_count": 16384,
+    "modeling_legacy_row_count": 16384,
+    "incomplete_rows_excluded_from_training": 0,
+    "parallel_single_demo": false,
+    "run_trust_mode": "legacy_import",
+    "mock_mode_flag": false
+  },
+  "model": {
+    "family": "legacy_ann",
+    "variant": "xyz",
+    "output_target": "xyz",
+    "input_dim": 4,
+    "output_dim": 3,
+    "hidden_layers": [
+      64,
+      64
+    ],
+    "activation": "relu",
+    "dtype": "float64",
+    "standardize_io": true
+  },
+  "loss": {
+    "kind": "mse_standardized",
+    "pose_orientation_scale": 10.0,
+    "weight_decay": 0.0001
+  },
+  "backend": {
+    "selected_backend": "cpu",
+    "recommended_backend": "cpu",
+    "torch_version": "2.11.0",
+    "python_version": "3.13.5",
+    "platform_summary": "Darwin 25.5.0 | arm64"
+  },
+  "training": {
+    "epochs_requested": 256,
+    "epochs_completed": 230,
+    "best_epoch": 200,
+    "best_validation_loss": 0.007736129939674018,
+    "test_loss": 0.007852196034246153,
+    "training_wall_time_s": 15.38942862499971,
+    "checkpointing": false,
+    "learning_rate": 0.001,
+    "batch_size": 128,
+    "random_seed": 0,
+    "weight_decay": 0.0001,
+    "early_stopping_patience": 30,
+    "early_stopped": true
+  },
+  "split": {
+    "strategy": "random_grouped_step",
+    "train_ratio": 0.7,
+    "validation_ratio": 0.15,
+    "test_ratio": 0.15,
+    "train_count": 11469,
+    "validation_count": 2458,
+    "test_count": 2457
+  },
+  "estimate": {
+    "estimated_total_s": 11.612430438399315,
+    "estimated_epoch_s": 0.045361056399997324,
+    "train_batch_time_s": 0.00048789601229752105,
+    "validation_batch_time_s": 7.252076466102153e-05,
+    "benchmark_train_batches": 6,
+    "benchmark_validation_batches": 4,
+    "train_batch_count": 90,
+    "validation_batch_count": 20
+  },
+  "evaluation": {
+    "single_dataset_split_note": "All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.",
+    "validation": {
+      "loss_mean": 0.007736129939674018,
+      "position_rmse_xyz_mm": 2.506745488765823,
+      "position_rmse_xy_mm": 2.4515590547201365,
+      "position_rmse_z_mm": 0.5230976454425271,
+      "position_error_l2_mm": {
+        "mean": 1.7936549691383015,
+        "median": 1.3374871569377416,
+        "p95": 5.118395307893383,
+        "max": 16.97543636476856
+      }
+    },
+    "test": {
+      "loss_mean": 0.007852196034246153,
+      "position_rmse_xyz_mm": 2.466363746050393,
+      "position_rmse_xy_mm": 2.4088768550718096,
+      "position_rmse_z_mm": 0.5293981723911364,
+      "position_error_l2_mm": {
+        "mean": 1.7931134175907752,
+        "median": 1.3560714838943149,
+        "p95": 4.515230252348401,
+        "max": 18.574124192657912
+      }
+    }
+  },
+  "files": {
+    "model_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/model.pt",
+    "loss_history_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/loss_history.csv",
+    "loss_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/loss_curve.png",
+    "loss_report_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/ann_loss_curve_report.png",
+    "split_manifest_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/split_manifest.json",
+    "summary_text_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/training_summary.txt",
+    "row_filter_report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/row_filter_report.json",
+    "scaler_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/io_scaler.json"
+  },
+  "io_scaler": {
+    "input": {
+      "mean": [
+        0.0034433033162353716,
+        0.008317017498878363,
+        0.0017710810700339937,
+        -0.009592074091064287
+      ],
+      "std": [
+        0.7527472979067803,
+        0.7534140960919049,
+        0.7490636586256059,
+        0.7508492899733121
+      ],
+      "eps": 1e-08
+    },
+    "output": {
+      "mean": [
+        -3.267844296603701,
+        -3.1317039791493317,
+        51.36624819642961
+      ],
+      "std": [
+        17.4195120497111,
+        17.41930198692634,
+        8.456831617665497
+      ],
+      "eps": 1e-08
+    }
+  },
+  "training_provenance": {
+    "source_file": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/kinematic_2024_07_16_21_33_12.dat",
+    "source_import_run_dir": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20240716_213312_kinematic_2024_07_16_21_33_12_import",
+    "operator_request": "train model from legacy kinematic dat and plot model against map"
+  },
+  "training_input_policy": "complete_rows_only",
+  "row_filter_report": {
+    "complete_row_count": 16384,
+    "excluded_row_count": 0,
+    "excluded_by_reason": {},
+    "target_complete_row_count": 16384,
+    "report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260530_170920_kinematic_2024_07_16_21_33_12_ann_64_64/row_filter_report.json"
+  }
+}

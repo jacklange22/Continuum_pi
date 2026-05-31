@@ -492,7 +492,7 @@ def test_tracking_tab_demotes_disconnect_and_diagnostic_actions(tmp_path: Path) 
         assert tab.validate_button.isEnabled() is False
         assert tab.disconnect_button.property("variant") == "ghost"
         assert tab.validate_button.property("variant") == "ghost"
-        assert tab.validate_button.text() == "Run Tracker Diagnostic"
+        assert tab.validate_button.text() == "Run Diagnostic"
 
         workflow_controller.connect_tracker()
         tab.update(workflow_controller.refresh(), live_controller.refresh())
@@ -2546,9 +2546,16 @@ def test_experiment_workspace_filters_options_by_operating_mode(tmp_path: Path) 
 
     controller.settings.robot.mode = "dual_segment"
     dual_options = [option.name for option in controller.refresh().experiment_options]
-    assert "two_segment_startup_validation" in dual_options
-    assert "two_segment_collect_pose_command_dataset" in dual_options
-    assert "two_segment_repeatability" in dual_options
+    assert dual_options == [
+        "two_segment_startup_validation",
+        "two_segment_collect_pose_command_dataset",
+        "two_segment_workspace_repeatability",
+        "two_segment_slow_motion_demo",
+        "two_segment_penprobe_lookup_demo",
+    ]
+    assert "two_segment_repeatability" not in dual_options
+    assert "registration_validation" not in dual_options
+    assert "tracker_timing_validation" not in dual_options
     assert "pretension_validation" not in dual_options
     assert "single_segment_repeatability" not in dual_options
     assert "penprobe_chasing_demo" not in dual_options
@@ -2572,7 +2579,7 @@ def test_experiment_workspace_clears_hidden_selection_after_mode_change(tmp_path
     assert "hidden for operating_mode=dual_segment" in state.status_message
 
 
-def test_experiment_workspace_loads_two_segment_repeatability_page(tmp_path: Path) -> None:
+def test_two_segment_repeatability_scaffold_is_hidden_from_dual_dropdown(tmp_path: Path) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
     controller.settings.robot = RobotConfig(
@@ -2605,14 +2612,13 @@ def test_experiment_workspace_loads_two_segment_repeatability_page(tmp_path: Pat
         top_segment_key="segment_b",
         physical_assembly_confirmed_by_operator=True,
     )
-    tab = ExperimentTab(controller)
-
-    controller.select_experiment("two_segment_repeatability")
     state = controller.refresh()
-    tab.update(state)
-    page = tab._page_for("two_segment_repeatability")
+    option_names = [option.name for option in state.experiment_options]
 
-    assert state.selected_experiment == "two_segment_repeatability"
+    assert "two_segment_repeatability" not in option_names
+    assert "two_segment_workspace_repeatability" in option_names
+
+    page = experiment_pages_module.build_experiment_page(controller, "two_segment_repeatability")
     assert isinstance(page, experiment_pages_module.TwoSegmentRepeatabilityPage)
     assert page.run_button.text() == "Run Two-Segment Repeatability"
 
@@ -2665,8 +2671,9 @@ def test_two_segment_penprobe_lookup_demo_page_constructs_offscreen_with_default
     assert page.target_tool_combo.currentData() == "0B"
     assert page.tip_tool_combo.currentData() == "0A"
     assert page.expected_distal_combo.currentData() == "0A"
-    # Map path edit starts blank.
-    assert page.map_path_edit.text() == ""
+    assert "demo/maps" in page.map_path_edit.text().replace("\\", "/")
+    assert page.control_rate_spin.value() == pytest.approx(10.0)
+    assert page.control_rate_spin.maximum() == pytest.approx(25.0)
     # Changing target / tip writes through to the controller payload.
     page.target_tool_combo.setCurrentIndex(page.target_tool_combo.findData("0C"))
     page.tip_tool_combo.setCurrentIndex(page.tip_tool_combo.findData("0B"))
@@ -4116,6 +4123,15 @@ def test_experiment_workspace_loads_prior_run_and_history(tmp_path: Path) -> Non
     assert loaded.selected_experiment == "command_schedule_validation"
     assert loaded.visualization_model.summary_lines
     assert any(label == "Run ID" for label, _value in loaded.result_details)
+
+
+def test_experiment_workspace_rejects_load_while_run_active(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("command_schedule_validation")
+    controller.state.run_active = True
+
+    with pytest.raises(RuntimeError, match="while an experiment is running"):
+        controller.load_run(tmp_path / "does_not_need_to_exist")
 
 
 def test_experiment_workspace_plans_output_under_experiment_type_folder(tmp_path: Path) -> None:

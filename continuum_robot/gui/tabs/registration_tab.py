@@ -71,7 +71,7 @@ class RegistrationTab(QWidget):
         self.workflow_hint = QLabel("")
         self.workflow_hint.setVisible(False)
 
-        self.dependency_status_label = QLabel("Waiting for tracker and accepted tip file.")
+        self.dependency_status_label = QLabel("Waiting for tracker/tip.")
         self.dependency_status_label.setProperty("role", "status")
         self.runtime_tip_mode_combo = QComboBox()
         self.runtime_tip_mode_combo.addItem("Latest Accepted", "latest_accepted")
@@ -80,13 +80,13 @@ class RegistrationTab(QWidget):
         self.runtime_tip_mode_combo.currentIndexChanged.connect(self._on_runtime_tip_mode_changed)
         self.runtime_tip_trust_label = QLabel("missing")
         self.runtime_tip_trust_label.setWordWrap(True)
-        self.runtime_tip_mode_message_label = QLabel("No runtime tip mode selected.")
+        self.runtime_tip_mode_message_label = QLabel("Not selected")
         self.runtime_tip_mode_message_label.setWordWrap(True)
         self.tip_file_label = QLabel("none")
         self.tip_file_label.setWordWrap(True)
         self.tip_geometry_label = QLabel("not ready")
         self.tip_geometry_label.setWordWrap(True)
-        self.accepted_registration_label = QLabel("No accepted registration saved.")
+        self.accepted_registration_label = QLabel("None saved")
         self.accepted_registration_label.setWordWrap(True)
         self.live_pose_label = QLabel("not ready")
         self.live_pose_label.setWordWrap(True)
@@ -95,7 +95,7 @@ class RegistrationTab(QWidget):
         self.dependency_text.setMinimumHeight(90)
         self.dependency_text.setMaximumHeight(150)
 
-        dependency_box = QGroupBox("Tip & Registration Source")
+        dependency_box = QGroupBox("Sources")
         dependency_layout = QVBoxLayout(dependency_box)
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
@@ -111,11 +111,11 @@ class RegistrationTab(QWidget):
         runtime_tip_row.addWidget(self.runtime_tip_trust_label, 0)
         runtime_tip_widget = QWidget()
         runtime_tip_widget.setLayout(runtime_tip_row)
-        dependency_form.addRow("Runtime tip mode", runtime_tip_widget)
+        dependency_form.addRow("Runtime tip", runtime_tip_widget)
         dependency_form.addRow("Tip source", self.runtime_tip_mode_message_label)
-        dependency_form.addRow("Accepted tip file", self.tip_file_label)
-        dependency_form.addRow("Saved registration", self.accepted_registration_label)
-        dependency_form.addRow("Live robot-frame pose", self.live_pose_label)
+        dependency_form.addRow("Tip file", self.tip_file_label)
+        dependency_form.addRow("Registration", self.accepted_registration_label)
+        dependency_form.addRow("Live pose", self.live_pose_label)
         dependency_layout.addLayout(dependency_form)
 
         self.begin_button = QPushButton("Begin Session")
@@ -185,8 +185,8 @@ class RegistrationTab(QWidget):
         required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
         minimum_count = int(self.controller.MINIMUM_SELECTION_COUNT)
         self.selection_hint = QLabel(
-            f"Tap the map or a row to toggle a landmark. Capture order = selection order. "
-            f"Min {minimum_count}, up to {required_count}."
+            f"Select landmarks on the map or table. Capture follows this order. "
+            f"Min {minimum_count}, max {required_count}."
         )
         self.selection_hint.setProperty("role", "hint")
         self.selection_hint.setWordWrap(True)
@@ -503,7 +503,9 @@ class RegistrationTab(QWidget):
         self.runtime_tip_mode_combo.setCurrentIndex(mode_index)
         self.runtime_tip_mode_combo.blockSignals(False)
         self.runtime_tip_trust_label.setText(str(state.runtime_tip_trust_level).replace("_", " "))
-        self.runtime_tip_mode_message_label.setText(state.runtime_tip_mode_message)
+        self.runtime_tip_mode_message_label.setText(
+            _compact_runtime_tip_message(state.runtime_tip_mode_message, state.runtime_tip_mode)
+        )
         session_status = "Solved - ready to save" if state.pending_accept else ("Capturing" if state.active else "Idle")
         self.session_status_label.setText(session_status)
         self._update_dependencies(state, workflow_state)
@@ -713,18 +715,18 @@ class RegistrationTab(QWidget):
             self.dependency_status_label.setText(
                 self.controller.begin_session_readiness_message()
                 if not state.active and not state.pending_accept
-                else "Registration session active."
+                else "Session active."
             )
             self.tip_file_label.setText(state.capture_geometry_status)
             self.tip_geometry_label.setText(state.capture_geometry_status)
-            self.accepted_registration_label.setText(state.result_status)
-            self.live_pose_label.setText("Load an accepted registration to compute live pose.")
+            self.accepted_registration_label.setText(_compact_registration_summary(state.result_status))
+            self.live_pose_label.setText("Load registration for live pose.")
             set_text_document(
                 self.dependency_text,
                 "\n".join(
                     [
-                        "Registration depends on a valid tracker session and accepted pen-probe tip geometry.",
-                        f"Capture geometry: {state.capture_geometry_status}",
+                        "Needs tracker + accepted tip geometry.",
+                        f"Geometry: {state.capture_geometry_status}",
                     ]
                 ),
                 stick_to_bottom_if_at_bottom=True,
@@ -739,12 +741,14 @@ class RegistrationTab(QWidget):
         elif state.active:
             self.dependency_status_label.setText("Capture in progress.")
         else:
-            self.dependency_status_label.setText("Ready for registration workflow.")
+            self.dependency_status_label.setText("Ready.")
 
         self.tip_file_label.setText(getattr(workflow_state, "pivot_tip_path", "") or "none")
         self.tip_geometry_label.setText(getattr(workflow_state, "measurement_point_message", state.capture_geometry_status))
         self.accepted_registration_label.setText(
-            getattr(workflow_state, "latest_registration_status", state.result_status) or state.result_status
+            _compact_registration_summary(
+                getattr(workflow_state, "latest_registration_status", state.result_status) or state.result_status
+            )
         )
         if getattr(workflow_state, "live_tip_position_mm", None) is not None:
             live_pose_text = (
@@ -759,9 +763,7 @@ class RegistrationTab(QWidget):
         if blockers:
             dependency_lines.append("Blocked until: " + " ".join(blockers))
         else:
-            dependency_lines.append(
-                "Tracker validation, accepted tip geometry, and landmark selection are in place for registration."
-            )
+            dependency_lines.append("Tracker, tip, and landmarks ready.")
         dependency_lines.extend(list(getattr(workflow_state, "transform_summary_lines", [])))
         set_text_document(self.dependency_text, "\n".join(dependency_lines), stick_to_bottom_if_at_bottom=True)
 
@@ -802,8 +804,8 @@ class RegistrationTab(QWidget):
         required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
         minimum_count = int(self.controller.MINIMUM_SELECTION_COUNT)
         hint = (
-            f"Tap the map or a row to toggle a landmark. Capture order = selection order. "
-            f"Min {minimum_count}, up to {required_count}."
+            f"Select landmarks on the map or table. Capture follows this order. "
+            f"Min {minimum_count}, max {required_count}."
             if state.selection_editable
             else "This registration mode uses a fixed point set."
         )
@@ -1010,6 +1012,37 @@ def _point_status(label: str, state: RegistrationViewState) -> str:
 def _display_name(label: str, state: RegistrationViewState) -> str:
     display = state.model_point_display_labels.get(label, label)
     return display if display == label else f"{display} ({label})"
+
+
+def _compact_runtime_tip_message(message: str, mode: str) -> str:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    mode_key = str(mode or "").strip().lower()
+    if not text or "no runtime tip mode selected" in lowered:
+        return "Not selected"
+    if mode_key == "coil_as_tip" or "coil-as-tip" in lowered:
+        return "0A coil direct"
+    if "latest accepted" in lowered:
+        return "Accepted artifact"
+    if "identity" in lowered and "fallback" in lowered:
+        return "Identity fallback"
+    if "runtime tip transform is not loaded" in lowered or lowered == "missing":
+        return "Missing"
+    if len(text) <= 72:
+        return text
+    return f"{text[:69].rstrip()}..."
+
+
+def _compact_registration_summary(message: str) -> str:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    if not text or "no accepted registration" in lowered:
+        return "None saved"
+    if "live robot-frame pose is unavailable" in lowered:
+        return "Unavailable"
+    if len(text) <= 86:
+        return text
+    return f"{text[:83].rstrip()}..."
 
 
 def _trust_text(state: str, message: str) -> str:

@@ -381,6 +381,7 @@ def test_build_figure_has_two_3d_axes_and_one_colorbar(tmp_path: Path) -> None:
         non_3d = [ax for ax in figure.axes if ax.name != "3d"]
         assert len(three_d) == 2
         assert len(non_3d) >= 1  # the colorbar
+        assert len(three_d[0].collections) >= 2  # prediction error + measured data overlay
     finally:
         import matplotlib.pyplot as plt
 

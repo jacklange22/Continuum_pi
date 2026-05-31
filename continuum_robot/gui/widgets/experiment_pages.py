@@ -295,10 +295,10 @@ class ExperimentPageBase(QWidget):
         results_card.body_layout.addWidget(self.results_widget)
 
         self.history_list = QListWidget()
-        self.history_list.itemDoubleClicked.connect(self._load_selected_history_item)
+        self.history_list.itemDoubleClicked.connect(self._open_history_item_folder)
         self.history_list.setSpacing(8)
         self.history_list.setMinimumHeight(220)
-        history_card = ExperimentCard("Recent Runs", "Double-click a previous run to load its summary, output paths, and plots.")
+        history_card = ExperimentCard("Recent Output Folders", "Double-click a row to open that run folder.")
         history_card.body_layout.addWidget(self.history_list)
 
         self.bottom_row = QBoxLayout(QBoxLayout.LeftToRight)
@@ -322,6 +322,7 @@ class ExperimentPageBase(QWidget):
         self.stop_button.setEnabled(state.run_active)
         self.open_output_button.setEnabled(bool(state.last_output_path or state.loaded_run_path))
         self.export_plot_button.setEnabled(bool(state.visualization_model.charts))
+        self.history_list.setEnabled(not state.run_active)
         self.destination_widget.set_pairs(
             [
                 ("Planned Output", state.planned_output_dir or "n/a"),
@@ -445,19 +446,10 @@ class ExperimentPageBase(QWidget):
         finally:
             self._run_click_in_flight = False
 
-    def _load_selected_history_item(self, item: QListWidgetItem) -> None:
+    def _open_history_item_folder(self, item: QListWidgetItem) -> None:
         raw_path = item.data(Qt.UserRole)
         if raw_path:
-            try:
-                self.controller.load_run(raw_path)
-            except Exception as exc:
-                LOG.exception("Experiment history load failed | path=%s", raw_path)
-                set_text_document(
-                    self.status_text,
-                    f"History load failed for {raw_path}: {exc}",
-                    stick_to_bottom_if_at_bottom=True,
-                )
-                return
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(raw_path)))
 
     def _open_current_run_folder(self) -> None:
         path = self.controller.state.last_output_path or self.controller.state.loaded_run_path
@@ -2325,37 +2317,37 @@ class TwoSegmentStartupValidationPage(ExperimentPageBase):
     show_visualization = False
     refresh_policy = "manual"
     page_hint = (
-        "Manual dual-segment startup scaffold. Use the Servos page to jog and pretension; "
-        "each checkpoint records all-8 telemetry without commanding motion."
+        "Capture the accepted all-8 startup artifact after manual jog/pretension. "
+        "Use the stage buttons in order; each checkpoint records telemetry without commanding motion."
     )
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         self.stage_summary_widget = None
         self.workflow_summary_widget = None
         super().__init__(controller, experiment_name, parent)
-        self.run_button.setText("Capture Full Stage Sequence")
+        self.run_button.hide()
         self.stop_button.hide()
 
     def _build_parameter_sections(self) -> None:
         workflow_card = ExperimentCard(
-            "Manual Stages",
-            "Capture one checkpoint after each manual operator action, then use Final / Accept Startup to write the all-8 artifact.",
+            "Startup Stages",
+            "Capture one checkpoint after each manual operator action. Final / Accept Startup writes the all-8 artifact.",
         )
         self.stage_summary_widget = KeyValueSummaryWidget()
         workflow_card.body_layout.addWidget(self.stage_summary_widget)
         for stage, label in [
-            ("baseline", "Capture Baseline"),
-            ("segment_a_pretensioned", "Capture Segment A Pretensioned"),
-            ("segment_b_pretensioned", "Capture Segment B Pretensioned"),
-            ("segment_a_recheck", "Capture Segment A Recheck"),
-            ("final_accept", "Capture Final / Accept Startup"),
+            ("baseline", "1. Capture Baseline"),
+            ("segment_a_pretensioned", "2. Capture Segment A Pretensioned"),
+            ("segment_b_pretensioned", "3. Capture Segment B Pretensioned"),
+            ("segment_a_recheck", "4. Capture Segment A Recheck"),
+            ("final_accept", "5. Capture Final / Accept Startup"),
         ]:
             button = QPushButton(label)
             button.clicked.connect(lambda checked=False, stage=stage: self._capture_stage(stage))
             workflow_card.body_layout.addWidget(button)
         self.parameter_layout.addWidget(workflow_card)
 
-        options_card = ExperimentCard("Capture Options", "Settings used by each manual checkpoint capture.")
+        options_card = ExperimentCard("Capture Settings", "Saved-state path and capture switches for each checkpoint.")
         options_form = QFormLayout()
         self.workflow_state_edit = QLineEdit("data/two_segment_startup_validation/current_workflow_state.json")
         self.workflow_state_edit.editingFinished.connect(
@@ -5647,17 +5639,17 @@ class DynamicModelingDatasetPage(ExperimentPageBase):
 
 
 class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
-    """Operator page for the two-segment weird sci-fi spine demo.
+    """Operator page for the two-segment presentation motion demo.
 
     Deliberately parameter-free: the operator picks a one-click preset (a
-    curated weird-waypoint relay or a fresh random one), previews it in
+    curated waypoint relay or a fresh random one), previews it in
     dry-run, then un-checks dry-run to record. Open-loop, demo-only -- the
     page keeps the demo-only contract visible on every screen.
     """
 
     refresh_policy = "manual"
     page_hint = (
-        "One-click weird sci-fi spine demo. Pick a preset, set the speed, preview in "
+        "One-click two-segment motion demo. Pick a preset, set the speed, preview in "
         "dry-run, then un-check dry-run to record. Open-loop and demo-only: NOT data "
         "collection; NOT closed-loop; NOT thesis-grade."
     )
@@ -5671,7 +5663,7 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
-        self.run_button.setText("Run Weird Sci-Fi Demo")
+        self.run_button.setText("Run Two-Segment Motion Demo")
 
     def _speed_slider_to_duration_s(self, value: int) -> float:
         span = self.SPEED_MAX_DURATION_S - self.SPEED_MIN_DURATION_S
@@ -5692,16 +5684,16 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
 
     def _build_parameter_sections(self) -> None:
         intro_card = ExperimentCard(
-            "Weird Sci-Fi Spine Demo",
+            "Two-Segment Motion Demo",
             "One-click presentation demo. Pick a preset, preview it in dry-run, then "
             "un-check dry-run to record. No parameters to tune — every preset is a "
             "known-good, bounded config that runs first try.",
         )
         intro_label = QLabel(
-            "The spine relays between weird waypoints across its workspace with an "
+            "The spine relays between waypoints across its workspace with an "
             "overlapping blend, so it flows from pose to pose without fully settling "
-            "— the sci-fi 'almost reaching / changing its mind' look. Open-loop and "
-            "demo-only: NOT data, NOT closed-loop, NOT thesis-grade."
+            "before the next transition. Open-loop and demo-only: NOT data, NOT "
+            "closed-loop, NOT thesis-grade."
         )
         intro_label.setWordWrap(True)
         intro_label.setProperty("role", "muted")
@@ -5712,19 +5704,17 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             "Pick a demo",
             "Each button fully configures the demo. Both preview in dry-run first.",
         )
-        self.sci_fi_preset_button = QPushButton("20s Sci-Fi Spine (curated)")
+        self.sci_fi_preset_button = QPushButton("Curated Relay")
         self.sci_fi_preset_button.setProperty("variant", "primary")
         self.sci_fi_preset_button.setToolTip(
-            "Nine hand-picked weird waypoints across the workspace at 0.35 cm over a "
-            "20-second video. Bottom and top segments deliberately bend in opposing "
+            "Hand-picked waypoints across the workspace. Bottom and top segments deliberately bend in opposing "
             "directions so the two-segment articulation reads on camera."
         )
         self.sci_fi_preset_button.clicked.connect(self._apply_sci_fi_spine_preset)
-        self.random_weird_button = QPushButton("Random Weird Spine (new every click)")
+        self.random_weird_button = QPushButton("Random Relay")
         self.random_weird_button.setProperty("variant", "primary")
         self.random_weird_button.setToolTip(
-            "Same 20-second relay, but the waypoints are a fresh maximin-spread random "
-            "set each click — a different weird path through the range every time."
+            "Fresh maximin-spread waypoint set each click — a different path through the range every time."
         )
         self.random_weird_button.clicked.connect(self._apply_random_weird_preset)
         presets_card.body_layout.addWidget(self.sci_fi_preset_button)
@@ -5761,7 +5751,7 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             "Un-check it only when you are ready to drive the hardware.",
         )
         self.dry_run_check = QCheckBox(
-            "Dry run / preview only (default ON; un-check for the live recording)"
+            "Dry run / preview only (check for preview; un-check for live recording)"
         )
         self.dry_run_check.toggled.connect(
             lambda value: self.controller.set_config_value("dry_run", bool(value))
@@ -5786,7 +5776,7 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         self.parameter_layout.addWidget(preview_card)
 
     def _apply_sci_fi_spine_preset(self) -> None:
-        """One-click apply the curated 20-second sci-fi spine config."""
+        """One-click apply the curated waypoint-relay config."""
         self._apply_relay_preset(
             waypoint_source="preset_weird",
             auto_select_seed=True,
@@ -5794,10 +5784,10 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         )
 
     def _apply_random_weird_preset(self) -> None:
-        """One-click apply a fresh random weird-spine config.
+        """One-click apply a fresh random waypoint-relay config.
 
         Uses the seeded maximin source with a new random base seed on each
-        click, so every press traces a different weird path through the
+        click, so every press traces a different path through the
         workspace. ``auto_select_seed`` still rolls forward from that base to
         guarantee well-separated waypoints, so a "bad" random draw can never
         produce a dull or too-tight path.
@@ -5813,19 +5803,19 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
     def _apply_relay_preset(
         self, *, waypoint_source: str, auto_select_seed: bool, relay_seed: int
     ) -> None:
-        """Push a complete, known-good sci-fi relay config to the controller.
+        """Push a complete, known-good waypoint-relay config to the controller.
 
         The soft/step tick caps are sized to the amplitude by the experiment at
-        setup(); we set the hard ceiling to 1000 here so the bigger-amplitude
-        weird motions are never blocked. Dry-run defaults OFF (operator asked) --
+        setup(); we set the hard ceiling to 1000 here so bigger-amplitude
+        relay motions are not blocked. Dry-run defaults OFF (operator asked) --
         the Run button shows the live mode and the operator can re-check dry-run
         to preview.
         """
         preset = {
             "pattern": "sci_fi_waypoint_relay",
             "video_duration_s": 14.0,        # faster default (speed slider tweaks it)
-            "waypoint_count": 18,            # a bunch more weird poses
-            "amplitude_cm": 0.5,             # a bit bigger
+            "waypoint_count": 18,
+            "amplitude_cm": 0.5,
             "early_switch_fraction": 0.5,    # more overlap = less settling/pause = flows
             "waypoint_source": str(waypoint_source),
             "auto_select_seed": bool(auto_select_seed),
@@ -5916,7 +5906,7 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
         if advisory.warnings:
             warning_text = "  WARN: " + "; ".join(advisory.warnings)
         self.preview_label.setText(
-            f"Sci-Fi Waypoint Relay  •  {len(waypoints)} weird waypoints  •  "
+            f"Waypoint Relay  •  {len(waypoints)} waypoints  •  "
             f"{config.video_duration_s:.1f} s total  •  "
             f"early-switch {config.early_switch_fraction:.2f} (overlap/flow)  •  "
             f"~{dense_writes} bus writes @ {config.command_rate_hz:.0f} Hz  •  "
@@ -6378,9 +6368,13 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
         )
         safety_form = QFormLayout()
         self.control_rate_spin = QDoubleSpinBox()
-        self.control_rate_spin.setRange(0.5, 10.0)
+        self.control_rate_spin.setRange(0.5, 25.0)
         self.control_rate_spin.setDecimals(1)
         self.control_rate_spin.setSingleStep(0.5)
+        self.control_rate_spin.setToolTip(
+            "Command-loop rate for reading the penprobe target and issuing lookup goals. "
+            "Default is 10 Hz; higher values are operator-owned and still use decimated current checks."
+        )
         self.control_rate_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("control_rate_hz", float(value))
         )
@@ -6473,6 +6467,7 @@ class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
                 ("Target Tool", f"{config.target_tool_id} (penprobe origin in robot base frame)"),
                 ("Tip Tool", f"{config.tip_tool_id} (distal/tip coil; live tracking OPTIONAL)"),
                 ("Expected Map Distal Tool", str(config.expected_map_distal_tool_id)),
+                ("Control Rate", f"{config.control_rate_hz:.1f} Hz"),
                 ("Interpolation", config.interpolation_mode + (" (off by default)" if not config.allow_interpolation else "")),
                 ("Unknown-assembly Maps", "allowed (servo_only maps)" if config.allow_unknown_map_assembly else "blocked"),
                 ("Demo-only Validity", "demo_only=True · not_closed_loop_validated=True · valid_for_model_training=False"),

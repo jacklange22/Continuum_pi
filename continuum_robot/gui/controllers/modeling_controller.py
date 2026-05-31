@@ -212,15 +212,12 @@ class ModelingController:
             catalog_dirty = self._catalog_dirty
             selected_dataset_path = self.state.selected_dataset_path
             selected_artifact_path = self.state.selected_artifact_path
-            selected_two_segment_run_paths = list(self.state.selected_two_segment_run_paths)
             selected_dataset_summary = self._selected_dataset_summary
             selected_artifact_details = self._selected_artifact_details
             evaluation_active = self.state.evaluation_active
-            two_segment_active = self.state.two_segment_active
 
         datasets = self.state.datasets
         artifacts = self.state.artifacts
-        two_segment_runs = list(self.state.two_segment_dataset_runs)
         if catalog_dirty:
             datasets = discover_modeling_datasets(
                 project_root=self.project_root,
@@ -235,13 +232,10 @@ class ModelingController:
                 artifact_root=self.artifact_root,
                 include_inverse=False,
             )
-            two_segment_runs = [str(path) for path in self.discover_two_segment_dataset_runs()]
             if not selected_dataset_path and datasets:
                 selected_dataset_path = str(datasets[0].path)
             if artifacts and selected_artifact_path == "":
                 selected_artifact_path = str(artifacts[0].path)
-            if not selected_two_segment_run_paths and two_segment_runs:
-                selected_two_segment_run_paths = [two_segment_runs[0]]
             selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
             selected_artifact_details = self._resolve_artifact_details(selected_artifact_path, artifacts)
         if (not catalog_dirty) and selected_dataset_summary is None and selected_dataset_path:
@@ -254,12 +248,6 @@ class ModelingController:
             or bool(self.config.include_camarillo)
             or (bool(self.config.include_ann) and bool(selected_artifact_details))
         ) and not evaluation_active
-        two_segment_trainability = self._two_segment_trainability_pairs(
-            selected_two_segment_run_paths,
-            allow_lower_trust=bool(self.state.two_segment_allow_lower_trust and not self.state.two_segment_strict_mode),
-        )
-        two_segment_can_run = bool(selected_two_segment_run_paths) and not two_segment_active and bool(self._two_segment_model_keys())
-
         with self._lock:
             self._catalog_dirty = False
             self._selected_dataset_summary = selected_dataset_summary
@@ -293,12 +281,6 @@ class ModelingController:
             self.state.include_ann = bool(self.config.include_ann)
             self.state.evaluation_scope = str(self.config.evaluation_scope)
             self.state.can_evaluate = can_evaluate
-            self.state.two_segment_dataset_runs = two_segment_runs
-            self.state.selected_two_segment_run_paths = selected_two_segment_run_paths
-            self.state.two_segment_summary_pairs = two_segment_trainability
-            self.state.two_segment_can_run = two_segment_can_run
-            self.state.two_segment_can_open_output = bool(self.state.two_segment_last_output_path)
-            self.state.two_segment_can_export_output = bool(self.state.two_segment_last_output_path)
             return self.state
 
     def select_dataset(self, path: str) -> None:

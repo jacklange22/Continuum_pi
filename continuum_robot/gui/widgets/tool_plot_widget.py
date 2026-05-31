@@ -116,19 +116,27 @@ def build_tracking_scene_model(
     lines: list[SceneLine3D] = []
     axes: list[SceneAxes3D] = [SceneAxes3D(key="frame", origin_xyz=(0.0, 0.0, 0.0), label=frame_axes_label)]
     polylines: list[ScenePolyline3D] = []
+    registration_state = str(getattr(live_state, "registration_state", "missing_registration")).replace("_", " ")
+    tip_mode = str(getattr(live_state, "runtime_tip_mode", "latest_accepted")).replace("_", " ")
+    tip_trust = str(getattr(live_state, "runtime_tip_trust_level", "missing")).replace("_", " ")
+    tip_source = _compact_runtime_tip_source(
+        message=str(getattr(live_state, "runtime_tip_mode_message", "missing")).strip(),
+        mode=str(getattr(live_state, "runtime_tip_mode", "latest_accepted")),
+    )
+    tip_parts = []
+    if tip_mode == "latest accepted" and tip_source == "accepted artifact":
+        tip_source = ""
+    for part in (tip_mode, tip_trust, tip_source):
+        if part and part not in tip_parts:
+            tip_parts.append(part)
     overlay_lines = [
-        f"0A raw pose: {_tool_overlay_state(live_state.tools.get('0A', {}))}",
-        f"0B raw pose: {_tool_overlay_state(live_state.tools.get('0B', {}))}",
-        f"Registration: {str(getattr(live_state, 'registration_state', 'missing_registration')).replace('_', ' ')}",
         (
-            "Runtime tip mode: "
-            f"{str(getattr(live_state, 'runtime_tip_mode', 'latest_accepted')).replace('_', ' ')} | "
-            f"{str(getattr(live_state, 'runtime_tip_trust_level', 'missing')).replace('_', ' ')}"
+            "Tools: "
+            f"0A {_tool_overlay_state(live_state.tools.get('0A', {}))} | "
+            f"0B {_tool_overlay_state(live_state.tools.get('0B', {}))}"
         ),
-        (
-            "Runtime tip source: "
-            f"{str(getattr(live_state, 'runtime_tip_mode_message', 'missing')).strip() or 'missing'}"
-        ),
+        f"Registration: {registration_state}",
+        f"Tip: {' | '.join(tip_parts)}",
     ]
 
     if registration_loaded:
@@ -250,6 +258,23 @@ def _tool_overlay_state(tool: Mapping[str, object]) -> str:
     tracking_state = str(tool.get("tracking_state", "unknown"))
     status = str(tool.get("status", "unknown"))
     return tracking_state if tracking_state == status else f"{tracking_state} ({status})"
+
+
+def _compact_runtime_tip_source(*, message: str, mode: str) -> str:
+    text = (message or "").strip()
+    lowered = text.lower()
+    mode_key = str(mode or "").strip().lower()
+    if not text or lowered == "missing" or "no runtime tip mode selected" in lowered:
+        return "missing"
+    if mode_key == "coil_as_tip" or "coil-as-tip" in lowered:
+        return "0A direct"
+    if "identity" in lowered and "fallback" in lowered:
+        return "identity fallback"
+    if "latest accepted" in lowered:
+        return "accepted artifact"
+    if len(text) <= 46:
+        return text
+    return f"{text[:43].rstrip()}..."
 
 
 def _tool_color(label: str) -> str:

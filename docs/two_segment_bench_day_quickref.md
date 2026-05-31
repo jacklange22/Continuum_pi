@@ -314,7 +314,8 @@ validated for thesis/model-training data. Not a substitute for IK.
 3. **Open the dedicated GUI page:** *Experiment tab → Two-Segment 0B → 0A
    Lookup Demo*. The page only appears in `dual_segment` mode and exposes
    exactly five operator-essential controls:
-   - **Map Path** — paste the JSON path from step 2
+   - **Map Path** — defaults to the bundled demo map; paste the JSON path
+     from step 2 only when you want to override it with a freshly-built map
    - **Target Tool** dropdown (default `0B`)
    - **Tip Tool** dropdown (default `0A`)
    - **Expected Map Distal Tool** (default `0A`)
@@ -324,8 +325,10 @@ validated for thesis/model-training data. Not a substitute for IK.
 4. **Run flow:**
    1. *Dry run first* — set `dry_run: true`, click Run, watch the trace
       record what *would* be written without touching the bus.
-   2. Live run at `control_rate_hz: 2`–`3` Hz. Hold 0B inside the mapped
-      workspace.
+   2. Live run at the default `control_rate_hz: 10` Hz. Hold 0B inside the
+      mapped workspace. Higher values are available up to 25 Hz after a clean
+      bench run; current checks are decimated separately so they do not stall
+      the command loop.
    3. The bus receives the all-8 goal ticks of whichever map point sits
       closest to the current 0B robot-frame pose.
    4. If 0A is visible, the trace records its position too plus
@@ -363,7 +366,8 @@ validated for thesis/model-training data. Not a substitute for IK.
    - Map's `map_distal_tool_id == 0A`
    - 1 Mbps baud (recommended for all-8 throughput)
    - Start in `nearest` mode, not `inverse_distance`
-   - Start with `control_rate_hz: 2`, raise only after one clean run
+   - Start with the default `control_rate_hz: 10`; raise toward 25 Hz only
+     after one clean run
 
 ## Stage 6: Evidence index + handoff (~2 min)
 

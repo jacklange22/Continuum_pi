@@ -336,7 +336,14 @@ class AppWindow(QMainWindow):
                 experiment_tab.shutdown()
             except Exception:
                 pass
-        for attribute in ("servos_controller", "experiment_controller", "modeling_controller", "tracking_controller"):
+        for attribute in (
+            "servos_controller",
+            "experiment_controller",
+            "modeling_controller",
+            "two_segment_modeling_controller",
+            "tracker_mvp_controller",
+            "tracking_controller",
+        ):
             controller = getattr(self, attribute, None)
             if controller is None:
                 continue

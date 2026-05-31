@@ -574,43 +574,19 @@ class ModelingTab(QWidget):
         )
         self.comparison_error_label.setVisible(False)
         comparison_card.body_layout.addWidget(self.comparison_error_label)
-        # Matplotlib canvas — local import so the class loads even on torch-less
-        # machines (the canvas itself doesn't need torch, but matplotlib's
-        # Qt-Agg backend is heavy enough to keep out of the import path until
-        # the tab is actually constructed).
-        from matplotlib.backends.backend_qtagg import (
-            FigureCanvasQTAgg,
-            NavigationToolbar2QT,
+        self.comparison_canvas = None
+        self.comparison_nav_toolbar = None
+        self._comparison_sync_cid = None
+        self._comparison_zoom_cid = None
+        self.comparison_placeholder = QLabel("Run a comparison to see the 3D error plots.")
+        self.comparison_placeholder.setAlignment(Qt.AlignCenter)
+        self.comparison_placeholder.setMinimumHeight(160)
+        self.comparison_placeholder.setStyleSheet(
+            f"color: {COLORS.text_muted}; background: {COLORS.surface_alt_bg}; "
+            f"border: 1px solid {COLORS.surface_border}; border-radius: 8px;"
         )
-        from matplotlib.figure import Figure
-
-        self._mpl_FigureCanvas = FigureCanvasQTAgg
-        self._mpl_NavToolbar = NavigationToolbar2QT
-        self._mpl_Figure = Figure
-        # Start with a placeholder figure so the canvas has fixed sizing.
-        placeholder = Figure(figsize=(10, 4.5))
-        ax = placeholder.add_subplot(111)
-        ax.text(
-            0.5,
-            0.5,
-            "Run a comparison to see two side-by-side 3D error plots.",
-            ha="center",
-            va="center",
-            fontsize=10,
-            color="#888",
-        )
-        ax.set_axis_off()
-        self.comparison_canvas = FigureCanvasQTAgg(placeholder)
-        self.comparison_canvas.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Expanding
-        )
-        self.comparison_canvas.setMinimumHeight(380)
-        comparison_card.body_layout.addWidget(self.comparison_canvas)
-        # Toolbar gives mouse-wheel zoom + drag-rotate on the 3D axes.
-        self.comparison_nav_toolbar = NavigationToolbar2QT(
-            self.comparison_canvas, self
-        )
-        comparison_card.body_layout.addWidget(self.comparison_nav_toolbar)
+        comparison_card.body_layout.addWidget(self.comparison_placeholder)
+        self._comparison_canvas_layout = comparison_card.body_layout
         # Internal: track the most recent comparison_result_id we've rendered so
         # we re-render the canvas only when a new result lands (cheap idempotent
         # update() that won't repaint on every refresh tick).
@@ -1124,6 +1100,31 @@ class ModelingTab(QWidget):
             self.comparison_error_label.setVisible(False)
         self.update(self.controller.refresh())
 
+    def _ensure_comparison_canvas(self) -> None:
+        if self.comparison_canvas is not None:
+            return
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg,
+            NavigationToolbar2QT,
+        )
+        from matplotlib.figure import Figure
+
+        placeholder = Figure(figsize=(10, 4.5))
+        ax = placeholder.add_subplot(111)
+        ax.set_axis_off()
+        self.comparison_canvas = FigureCanvasQTAgg(placeholder)
+        self.comparison_canvas.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding
+        )
+        self.comparison_canvas.setMinimumHeight(380)
+        self.comparison_placeholder.setVisible(False)
+        self._comparison_canvas_layout.addWidget(self.comparison_canvas)
+        self.comparison_nav_toolbar = NavigationToolbar2QT(
+            self.comparison_canvas,
+            self,
+        )
+        self._comparison_canvas_layout.addWidget(self.comparison_nav_toolbar)
+
     def _render_comparison_canvas(self) -> None:
         """Rebuild the embedded matplotlib figure from the latest comparison result.
 
@@ -1133,6 +1134,7 @@ class ModelingTab(QWidget):
         result = self.controller.get_last_comparison_result()
         if result is None:
             return
+        self._ensure_comparison_canvas()
         # Lazy-import the figure builder so the tab loads without torch present.
         from continuum_robot.modeling.model_comparison import build_comparison_figure
 

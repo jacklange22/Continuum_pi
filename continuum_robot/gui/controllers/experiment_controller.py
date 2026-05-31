@@ -89,18 +89,9 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
     "dual_segment": {
         "two_segment_startup_validation",
         "two_segment_collect_pose_command_dataset",
-        "two_segment_repeatability",
         "two_segment_workspace_repeatability",
         "two_segment_slow_motion_demo",
         "two_segment_penprobe_lookup_demo",
-        "registration_validation",
-        "pivot_validation",
-        "neutral_setpoint_drift_validation",
-        "aurora_grid_accuracy",
-        "tracker_timing_validation",
-        "servo_tracker_sync_validation",
-        "command_schedule_validation",
-        "replay_runner",
     },
     "parallel_single": {
         "collect_pose_command_dataset",
@@ -611,6 +602,8 @@ class ExperimentController:
             self._visualization_dirty = True
 
     def run(self, *, confirm_overwrite: bool = False) -> None:
+        with self._lock:
+            self._reset_planned_output_dir_locked()
         state = self.refresh()
         if state.preflight_report.overall_status == RUN_BLOCKED:
             raise RuntimeError(state.preflight_report.summary)
@@ -635,7 +628,6 @@ class ExperimentController:
             self.state.progress_total = 0
             self.state.status_message = f"Running {self.state.selected_experiment}."
             self.state.last_error = None
-            self.state.last_output_path = None
             self._live_samples = []
             self._current_bundle = None
             experiment_name = self.state.selected_experiment
@@ -644,6 +636,8 @@ class ExperimentController:
             output_root = self._resolve_repo_path(self.state.output_root)
             output_dir_name = self._planned_output_dir_name
             self._active_run_output_dir = self._planned_output_dir(output_root, experiment_name)
+            self.state.loaded_run_path = None
+            self.state.last_output_path = str(self._active_run_output_dir)
             self._invalidate_preflight_cache_locked()
             self._visualization_dirty = True
             self.state.penprobe_chase_live_summary = ""
@@ -723,6 +717,9 @@ class ExperimentController:
             self.state.status_message = "Stop requested."
 
     def load_run(self, path: Path) -> None:
+        with self._lock:
+            if self.state.run_active:
+                raise RuntimeError("Cannot load a prior run while an experiment is running.")
         bundle = self.experiment_runner.load_dataset(Path(path))
         experiment_name = bundle.metadata.experiment_name
         if experiment_name not in self._options_by_name:
@@ -785,8 +782,8 @@ class ExperimentController:
             "servo_tracker_sync_validation",
             "two_segment_startup_validation",
             "two_segment_collect_pose_command_dataset",
-            "two_segment_repeatability",
             "two_segment_workspace_repeatability",
+            "two_segment_slow_motion_demo",
             "two_segment_penprobe_lookup_demo",
             "pretension_validation",
             "command_schedule_validation",
@@ -829,8 +826,8 @@ class ExperimentController:
             if issues:
                 assembly_text = "Bottom/top physical_assembly is INVALID — " + "; ".join(issues)
             return (
-                "Showing dual_segment foundation workflows: all-8 startup validation, "
-                "two-segment collect-pose dataset, two-segment repeatability, and supporting diagnostics. "
+                "Showing dual_segment operator workflows only: all-8 startup, collect-pose dataset, "
+                "workspace repeatability, slow-motion demo, and penprobe lookup demo. "
                 + assembly_text
             )
         if mode == "parallel_single":
