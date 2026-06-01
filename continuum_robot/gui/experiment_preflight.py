@@ -66,6 +66,7 @@ from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
     PivotCalibrationConfig,
     _captured_points_contain_synthetic_samples,
+    find_latest_valid_pivot_calibration,
 )
 from continuum_robot.experiments.schedules import generate_command_schedule
 from continuum_robot.tracking.runtime_tip_policy import (
@@ -810,30 +811,35 @@ def evaluate_preflight(
                 mock_mode=bool(settings.runtime.mock_mode),
             )
         )
-        if config.use_tip_calibration:
-            tip_path = _resolve_repo_path(project_root, config.tip_file) if config.tip_file else None
-            if config.tip_vector_mm is not None:
-                checks.append(_ok("tip_calibration", "Tip Calibration", "Tip calibration is provided directly in config."))
-            elif tip_path is not None and tip_path.exists():
-                checks.append(_ok("tip_calibration", "Tip Calibration", f"Tip calibration file found: {tip_path}"))
-            elif config.allow_coil_origin_fallback:
-                checks.append(
-                    _warning(
-                        "tip_calibration",
-                        "Tip Calibration",
-                        "Tip calibration is missing. The experiment can run with coil-origin fallback, but tip-based accuracy metrics will be partial.",
-                    )
+        # The probe tip vector MUST come from the latest valid pivot calibration
+        # (no hardcoded vector, no coil-origin fallback). Block if none exists.
+        pivot_source = find_latest_valid_pivot_calibration(project_root, tool_id=config.tool_id)
+        if pivot_source.available:
+            tip_txt = ", ".join(f"{value:.2f}" for value in (pivot_source.tip_vector_mm or []))
+            rmse_txt = (
+                f", RMSE {pivot_source.pivot_rmse_mm:.2f} mm"
+                if pivot_source.pivot_rmse_mm is not None
+                else ""
+            )
+            checks.append(
+                _ok(
+                    "pivot_calibration",
+                    "Pivot Calibration",
+                    f"Using latest valid pivot calibration '{pivot_source.pivot_run_name}'{rmse_txt}. "
+                    f"Probe tip vector = [{tip_txt}] mm.",
                 )
-            else:
-                checks.append(
-                    _blocked(
-                        "tip_calibration",
-                        "Tip Calibration",
-                        "Tip calibration is required for this run. Provide tip_vector_mm, point to a valid tip_file, or enable allow_coil_origin_fallback.",
-                    )
-                )
+            )
         else:
-            checks.append(_info("tip_calibration", "Tip Calibration", "Tip calibration is not required for this run."))
+            checks.append(
+                _blocked(
+                    "pivot_calibration",
+                    "Pivot Calibration",
+                    f"No valid pivot calibration found for tool {config.tool_id} under "
+                    "data/pivot_calibration/. Run a pivot calibration first — the latest "
+                    "successful one is used automatically as the probe tip. (Grid accuracy "
+                    "requires a real pivot calibration; there is no hardcoded tip or fallback.)",
+                )
+            )
 
         checks.append(
             _info(
@@ -874,20 +880,14 @@ def evaluate_preflight(
         if complete_points == 0 and partial_points == 0 and raw_samples == 0:
             complete_points = int(payload.get("captured_point_count", 0) or 0)
             raw_samples = int(payload.get("captured_sample_count", 0) or 0)
-        if synthetic_captured_samples and not config.dry_run:
+        if synthetic_captured_samples:
             checks.append(
                 _blocked(
                     "capture_source",
                     "Capture Source",
-                    "Captured grid samples include dry-run/synthetic data while Dry Run is off. Restart the grid run and recapture with live tracking.",
-                )
-            )
-        elif synthetic_captured_samples:
-            checks.append(
-                _warning(
-                    "capture_source",
-                    "Capture Source",
-                    "Captured grid samples are synthetic dry-run data, not live Aurora measurements.",
+                    "Captured grid samples include synthetic/dry-run data. Aurora grid accuracy "
+                    "refuses synthetic data — restart the grid run and recapture every point "
+                    "from the live Aurora tracker.",
                 )
             )
         elif raw_samples > 0:
@@ -895,7 +895,7 @@ def evaluate_preflight(
                 _ok(
                     "capture_source",
                     "Capture Source",
-                    "Captured grid samples are marked as live/legacy manual measurements, not synthetic dry-run data.",
+                    "Captured grid samples are live Aurora measurements.",
                 )
             )
         if complete_points >= 3:

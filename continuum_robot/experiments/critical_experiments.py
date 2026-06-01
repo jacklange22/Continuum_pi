@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import json
 import math
 from pathlib import Path
 import random
@@ -148,11 +149,18 @@ class GridDefinitionConfig:
     truth_points_file: str | None = None
     truth_frame: str = "tracker"
     tool_id: str = "0B"
+    # The tip vector is ALWAYS sourced from the latest valid pivot calibration
+    # (see resolve_grid_tip_source). use_tip_calibration / tip_vector_mm /
+    # tip_file / allow_coil_origin_fallback are retained for back-compat config
+    # parsing only and are IGNORED by the experiment — there is no hardcoded
+    # vector and no coil-origin fallback.
     use_tip_calibration: bool = True
     tip_vector_mm: list[float] | None = None
     tip_file: str | None = None
-    allow_coil_origin_fallback: bool = True
-    dry_run: bool = True
+    allow_coil_origin_fallback: bool = False
+    # dry_run / synthetic_* are retained for back-compat parsing only. The
+    # experiment no longer synthesizes data — it requires real captured points.
+    dry_run: bool = False
     seed: int | None = None
     """Synthetic-mode RNG seed.
 
@@ -206,8 +214,8 @@ class GridDefinitionConfig:
                 else None
             ),
             tip_file=str(payload["tip_file"]) if payload.get("tip_file") not in (None, "") else None,
-            allow_coil_origin_fallback=bool(payload.get("allow_coil_origin_fallback", True)),
-            dry_run=bool(payload.get("dry_run", True)),
+            allow_coil_origin_fallback=bool(payload.get("allow_coil_origin_fallback", False)),
+            dry_run=bool(payload.get("dry_run", False)),
             seed=(int(payload["seed"]) if payload.get("seed") not in (None, "") else None),
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.25)),
             synthetic_bias_mm=[float(value) for value in payload.get("synthetic_bias_mm", [0.2, -0.1, 0.05])],
@@ -603,104 +611,47 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
             self._tracking_started_here = True
 
     def execute(self, session: ExperimentSession) -> None:
+        # 1) Refuse synthetic data: the run requires REAL captured grid points.
+        #    There is no synthetic / dry-run data-generation path any more.
+        if not self.config.captured_points:
+            raise RuntimeError(
+                "Aurora grid accuracy requires real captured grid points. Capture the grid "
+                "points from the live Aurora tracker on the grid page first — the experiment "
+                "no longer synthesizes data."
+            )
+        if _captured_points_contain_synthetic_samples(self.config.captured_points):
+            raise RuntimeError(
+                "Aurora grid accuracy refuses synthetic/dry-run captured samples. Restart the "
+                "grid run and recapture every point from the live tracker."
+            )
+        # 2) Require a valid, current pivot calibration as the 0B tip vector.
+        #    No hardcoded vector, no coil-origin fallback — the tip MUST come
+        #    from the latest successful pivot calibration.
+        tip_source = resolve_grid_tip_source(self.config, project_root=session.context.project_root)
+        if not tip_source.available:
+            raise RuntimeError(
+                "Aurora grid accuracy requires a valid pivot calibration for tool "
+                f"{self.config.tool_id}. No successful pivot calibration was found under "
+                "data/pivot_calibration/. Run a pivot calibration first; the latest successful "
+                "one is used automatically."
+            )
+
         preview = build_grid_accuracy_preview(
             self.config,
             project_root=session.context.project_root,
         )
-        if self.config.captured_points and not self.config.dry_run and _captured_points_contain_synthetic_samples(
-            self.config.captured_points
-        ):
-            raise RuntimeError(
-                "Live Aurora grid accuracy run contains dry-run/synthetic captured samples. "
-                "Restart the grid run, confirm Dry Run is off, and recapture the points from the live tracker."
-            )
         truth_points = [entry["truth_point_mm"] for entry in preview.truth_catalog]
-        tip_vector, tip_calibration_available = _load_tip_vector(session, self.config)
-        if preview.samples:
-            total = len(preview.samples)
-            for completed, sample in enumerate(preview.samples, start=1):
-                session.raise_if_stop_requested()
-                session.add_sample(sample)
-                session.update_progress(
-                    completed,
-                    total,
-                    {
-                        "phase": sample.phase,
-                        "target_index": sample.target_index,
-                    },
-                )
-        else:
-            if not self.config.dry_run:
-                raise RuntimeError(
-                    "Live Aurora grid accuracy requires captured_points from the page-side tracker capture workflow. "
-                    "No captured points were supplied, so the experiment refused to synthesize live data."
-                )
-            # Synthetic-mode seed: when the caller did not pin a specific seed,
-            # roll a fresh one each run so successive "Save Grid Validation Run"
-            # presses produce different synthetic datasets. This metric is only
-            # written for generated dry-run data because the thesis-integrity
-            # audit uses it as an explicit synthetic marker.
-            effective_seed = (
-                int(self.config.seed)
-                if self.config.seed is not None
-                else int(secrets.randbits(32))
+
+        total = len(preview.samples)
+        for completed, sample in enumerate(preview.samples, start=1):
+            session.raise_if_stop_requested()
+            session.add_sample(sample)
+            session.update_progress(
+                completed,
+                total,
+                {"phase": sample.phase, "target_index": sample.target_index},
             )
-            session.metrics["synthetic_seed_used"] = int(effective_seed)
-            rng = np.random.default_rng(effective_seed)
-            total = len(truth_points) * max(1, self.config.repetitions_per_point) * max(1, self.config.samples_per_point)
-            completed = 0
-            truth_catalog = preview.truth_catalog
-            truth_to_tracker_R, truth_to_tracker_t = _synthetic_grid_alignment(effective_seed)
-            # Constant per-axis bias applied to every synthetic sample. Models
-            # a systematic offset (e.g. probe-tip calibration error) on top of
-            # the random per-frame noise so the operator can see how the
-            # alignment algorithm absorbs translation vs hands it back as
-            # residual.  Length is clamped to 3 with zero-fill for safety.
-            bias_xyz = list(self.config.synthetic_bias_mm or [])
-            bias_xyz = bias_xyz[:3] + [0.0] * max(0, 3 - len(bias_xyz))
-            bias_vector = np.asarray(bias_xyz, dtype=float)
-            for point_index, truth_point in enumerate(truth_points):
-                truth_entry = truth_catalog[point_index]
-                for repetition_index in range(max(1, self.config.repetitions_per_point)):
-                    if self.config.settle_time_s > 0:
-                        session.context.sleep_fn(self.config.settle_time_s)
-                    for sample_index in range(max(1, self.config.samples_per_point)):
-                        measured_tracker = (
-                            (truth_to_tracker_R @ np.asarray(truth_point, dtype=float))
-                            + truth_to_tracker_t
-                            + bias_vector
-                            + rng.normal(0.0, self.config.synthetic_noise_std_mm, size=3)
-                        )
-                        if tip_vector is None and self.config.use_tip_calibration:
-                            status_flags = ["dry_run", "synthetic_capture", "missing_tip_calibration"]
-                            position_source = "missing_tip_calibration"
-                        else:
-                            status_flags = ["dry_run", "synthetic_capture"]
-                            position_source = "synthetic_tip" if tip_vector is not None else "synthetic_coil_origin"
-                        sample = sample_from_tracking_snapshot(
-                            session,
-                            snapshot=_grid_snapshot(session, self.config.tool_id),
-                            phase="sample",
-                            step_index=point_index,
-                            sample_index=sample_index,
-                            target_index=point_index,
-                            revisit_index=repetition_index,
-                            commanded_cable_deltas_cm=[],
-                            commanded_motor_values={},
-                            override_tracker_position_mm=measured_tracker.tolist(),
-                            tracker_tool_id=self.config.tool_id,
-                            status_flags=status_flags,
-                            extra={
-                                "truth_label": truth_entry["label"],
-                                "truth_point_mm": [float(value) for value in truth_point],
-                                "position_source": position_source,
-                                "capture_mode": "synthetic_dry_run",
-                                "synthetic_seed_used": int(effective_seed),
-                            },
-                        )
-                        session.add_sample(sample)
-                        completed += 1
-                        session.update_progress(completed, total, {"phase": "sample", "target_index": point_index})
+
         metrics = compute_grid_accuracy_metrics(
             session.samples,
             truth_points_mm=truth_points,
@@ -708,18 +659,28 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
             truth_frame="grid_local",
             outlier_threshold_mm=self.config.outlier_threshold_mm,
             registration_available=session.context.registration_path.exists(),
-            tip_calibration_available=tip_calibration_available,
-            require_tip_calibration=self.config.use_tip_calibration,
-            allow_coil_origin_fallback=self.config.allow_coil_origin_fallback,
+            tip_calibration_available=True,
+            require_tip_calibration=True,
+            allow_coil_origin_fallback=False,
         )
-        if self.config.captured_points:
-            metrics.update(
-                _grid_capture_progress_metrics(
-                    captured_points=self.config.captured_points,
-                    truth_catalog=preview.truth_catalog,
-                    expected_samples=max(1, int(self.config.samples_per_point)),
-                )
+        metrics.update(
+            _grid_capture_progress_metrics(
+                captured_points=self.config.captured_points,
+                truth_catalog=preview.truth_catalog,
+                expected_samples=max(1, int(self.config.samples_per_point)),
             )
+        )
+        # Record exactly which pivot calibration supplied the tip vector so the
+        # bundle is self-documenting for the thesis.
+        metrics["pivot_calibration"] = {
+            "run_name": tip_source.pivot_run_name,
+            "tip_vector_mm": list(tip_source.tip_vector_mm or []),
+            "rmse_mm": tip_source.pivot_rmse_mm,
+            "summary_path": tip_source.pivot_summary_path,
+            "tool_id": self.config.tool_id,
+        }
+        metrics["pivot_tip_vector_mm"] = list(tip_source.tip_vector_mm or [])
+        metrics["pivot_calibration_run"] = tip_source.pivot_run_name
         metrics["summary_requirements"] = {"force_status": metrics["status"]}
         session.metrics.update(metrics)
 
@@ -1643,10 +1604,9 @@ def build_grid_accuracy_preview(
     """Normalize captured point records into canonical samples plus aligned residual metrics."""
     truth_catalog = build_grid_truth_catalog(config, project_root=project_root)
     samples = grid_capture_records_to_samples(config.captured_points, truth_catalog=truth_catalog, tool_id=config.tool_id)
-    tip_calibration_available = _grid_tip_calibration_used_by_samples(
-        samples,
-        fallback_configured=bool(config.tip_vector_mm or config.tip_file),
-    )
+    # Tip availability is gated on a valid pivot calibration — there is no
+    # hardcoded vector or coil-origin fallback for the grid accuracy run.
+    tip_calibration_available = resolve_grid_tip_source(config, project_root=project_root).available
     metrics = compute_grid_accuracy_metrics(
         samples,
         truth_points_mm=[entry["truth_point_mm"] for entry in truth_catalog],
@@ -1655,8 +1615,8 @@ def build_grid_accuracy_preview(
         outlier_threshold_mm=config.outlier_threshold_mm,
         registration_available=False,
         tip_calibration_available=tip_calibration_available,
-        require_tip_calibration=config.use_tip_calibration,
-        allow_coil_origin_fallback=config.allow_coil_origin_fallback,
+        require_tip_calibration=True,
+        allow_coil_origin_fallback=False,
     )
     metrics.update(
         _grid_capture_progress_metrics(
@@ -1668,21 +1628,107 @@ def build_grid_accuracy_preview(
     return GridAccuracyPreview(truth_catalog=truth_catalog, samples=samples, metrics=metrics)
 
 
+@dataclass(frozen=True)
+class GridTipSource:
+    """Resolved tip vector for the grid run, with pivot-calibration provenance.
+
+    The grid accuracy experiment REQUIRES the tip vector to come from a real,
+    current pivot calibration — there is no hardcoded vector and no coil-origin
+    fallback. ``available`` is False when no valid pivot calibration exists, in
+    which case the run is refused.
+    """
+
+    tip_vector_mm: list[float] | None
+    available: bool
+    source: str  # "pivot" or "none"
+    pivot_run_name: str | None = None
+    pivot_rmse_mm: float | None = None
+    pivot_summary_path: str | None = None
+
+
+def find_latest_valid_pivot_calibration(
+    project_root: Path,
+    *,
+    tool_id: str = "0B",
+) -> GridTipSource:
+    """Return the tip vector from the latest VALID pivot calibration for ``tool_id``.
+
+    Valid = a ``data/pivot_calibration/<ts>_pivot_calibration[_review]/`` run
+    whose ``summary.json`` has ``status == "success"``, a matching
+    ``pivot_input_tool_id``, and a 3-vector ``tip_vector_local_mm``. Runs are
+    scanned newest-first by directory name (timestamp prefix). Returns a
+    GridTipSource with ``available=False`` when none qualifies.
+    """
+    root = Path(project_root) / "data" / "pivot_calibration"
+    if not root.exists():
+        return GridTipSource(None, False, "none")
+    tool = str(tool_id or "").strip().upper()
+    try:
+        run_dirs = sorted(
+            (d for d in root.iterdir() if d.is_dir() and d.name not in {"captures", "staged"}),
+            key=lambda d: d.name,
+            reverse=True,
+        )
+    except OSError:
+        return GridTipSource(None, False, "none")
+    for run_dir in run_dirs:
+        summary_path = run_dir / "summary.json"
+        if not summary_path.exists():
+            continue
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if str(payload.get("status", "")).strip().lower() != "success":
+            continue
+        metrics = payload.get("experiment_metrics", {})
+        if not isinstance(metrics, dict):
+            continue
+        run_tool = str(metrics.get("pivot_input_tool_id", "")).strip().upper()
+        if tool and run_tool and run_tool != tool:
+            continue
+        tip = metrics.get("tip_vector_local_mm")
+        if not isinstance(tip, (list, tuple)) or len(tip) != 3:
+            continue
+        try:
+            vector = [float(value) for value in tip]
+        except (TypeError, ValueError):
+            continue
+        rmse = metrics.get("rmse_mm")
+        return GridTipSource(
+            tip_vector_mm=vector,
+            available=True,
+            source="pivot",
+            pivot_run_name=run_dir.name,
+            pivot_rmse_mm=(float(rmse) if isinstance(rmse, (int, float)) else None),
+            pivot_summary_path=str(summary_path),
+        )
+    return GridTipSource(None, False, "none")
+
+
+def resolve_grid_tip_source(
+    config: GridDefinitionConfig,
+    *,
+    project_root: Path,
+) -> GridTipSource:
+    """The grid tip vector MUST come from the latest valid pivot calibration.
+
+    Any hardcoded ``config.tip_vector_mm`` / ``tip_file`` is intentionally
+    ignored: a thesis-grade grid accuracy run requires a real, current pivot
+    calibration for the probe (tool 0B).
+    """
+    return find_latest_valid_pivot_calibration(project_root, tool_id=config.tool_id)
+
+
 def resolve_grid_tip_vector(
     config: GridDefinitionConfig,
     *,
     project_root: Path,
 ) -> tuple[list[float] | None, bool]:
-    """Resolve the configured grid tip vector for page-side capture or runner execution."""
-    if config.tip_vector_mm is not None:
-        return [float(value) for value in config.tip_vector_mm], True
-    if config.tip_file:
-        path = _resolve_repo_path(project_root, config.tip_file)
-        arr = np.loadtxt(path, delimiter=",")
-        arr = np.asarray(arr, dtype=float).reshape(-1)
-        if arr.shape == (3,):
-            return [float(value) for value in arr], True
-    return None, False
+    """Back-compat wrapper: returns ``(tip_vector_mm, available)`` sourced only
+    from the latest valid pivot calibration."""
+    source = resolve_grid_tip_source(config, project_root=project_root)
+    return source.tip_vector_mm, source.available
 
 
 def grid_capture_records_to_samples(
