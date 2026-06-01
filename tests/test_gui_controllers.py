@@ -3703,33 +3703,59 @@ def test_experiment_workspace_loads_motor_babble_run_result_details(tmp_path: Pa
     assert "Dataset Quality Summary" in labels
 
 
-def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_path: Path) -> None:
+def _grid_live_snapshot(controller, monkeypatch, *, base=(10.0, 20.0, 30.0)) -> None:
+    """Make page-side live grid capture work: a tracked 0B tool whose position
+    advances across a plane on each capture so multi-point grids are
+    non-degenerate. (The pivot tip comes from the repo's real pivot data.)"""
+    from continuum_robot.services.models import ServiceHealthSnapshot, ToolTrackingSnapshot, TrackingSnapshot
+
+    state = {"n": 0}
+
+    def _snap():
+        n = state["n"]
+        state["n"] += 1
+        x = base[0] + (n % 3) * 12.0
+        y = base[1] + (n // 3) * 12.0
+        return TrackingSnapshot(
+            health=ServiceHealthSnapshot(name="tracking", health="healthy", state="tracking", status="ok"),
+            connection_state="connected",
+            canonical_state="streaming_healthy",
+            tracker_data_age_s=0.01,
+            tracker_data_stale=False,
+            tools={
+                "0B": ToolTrackingSnapshot(
+                    tool_id="0B", present=True, valid=True, tracking_state="tracked",
+                    translation_mm=(x, y, base[2]), quaternion_wxyz=(1.0, 0.0, 0.0, 0.0), frame_number=n,
+                )
+            },
+        )
+
+    monkeypatch.setattr(controller.tracking_service, "get_snapshot", _snap)
+
+
+def test_experiment_workspace_blocks_grid_accuracy_without_valid_pivot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The grid run requires a valid pivot calibration; with none available the
+    # preflight blocks (no hardcoded tip / coil fallback any more).
+    import continuum_robot.gui.experiment_preflight as preflight_module
+    import continuum_robot.experiments.critical_experiments as ce
+    monkeypatch.setattr(
+        preflight_module, "find_latest_valid_pivot_calibration",
+        lambda project_root, *, tool_id="0B": ce.GridTipSource(None, False, "none"),
+    )
     controller = _experiment_controller(tmp_path)
     controller.select_experiment("aurora_grid_accuracy")
-    controller.set_config_text(
-        "\n".join(
-            [
-                "dry_run: true",
-                "dimensions: [2, 2]",
-                "repetitions_per_point: 1",
-                "samples_per_point: 1",
-                "tool_id: \"0B\"",
-                "truth_frame: \"tracker\"",
-                "use_tip_calibration: true",
-                "allow_coil_origin_fallback: false",
-            ]
-        )
-    )
+    controller.set_config_text("\n".join(["dimensions: [2, 2]", "samples_per_point: 1", "tool_id: \"0B\""]))
 
     state = controller.refresh()
 
     assert state.preflight_report.overall_status == "blocked"
-    assert any("Tip calibration is required" in message for message in state.preflight_report.blocking_messages)
+    assert any("pivot calibration" in message.lower() for message in state.preflight_report.blocking_messages)
 
 
-def test_grid_accuracy_page_captures_labeled_points_and_updates_preview(tmp_path: Path) -> None:
+def test_grid_accuracy_page_captures_labeled_points_and_updates_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
+    _grid_live_snapshot(controller, monkeypatch)
     tab = ExperimentTab(controller)
     controller.select_experiment("aurora_grid_accuracy")
     state = controller.refresh()
@@ -3748,12 +3774,14 @@ def test_grid_accuracy_page_captures_labeled_points_and_updates_preview(tmp_path
     refreshed = controller.refresh()
     tab.update(refreshed)
 
-    assert refreshed.preflight_report.overall_status == "ok_with_warning"
-    assert any("synthetic dry-run data" in message.lower() for message in refreshed.preflight_report.warning_messages)
-    assert len(controller.get_config_value("captured_points", [])) == 3
+    captured = controller.get_config_value("captured_points", [])
+    assert refreshed.preflight_report.overall_status != "blocked"
+    assert len(captured) == 3
+    # Live captures only — never synthetic.
+    assert captured[0]["raw_samples"][0]["capture_mode"] == "live_tracker"
+    assert not any("synthetic" in str(sample.get("status_flags", [])).lower() for sample in captured[0]["raw_samples"])
     assert page.point_table.item(0, 2).text() == "2"
     assert "P04" in page.selected_point_label.text()
-    assert any(label == "Coverage" for label, _value in refreshed.result_details)
     assert page.capture_summary_widget._pairs_signature is not None
 
 
@@ -3807,33 +3835,28 @@ def test_grid_accuracy_live_capture_accepts_tracked_tool_state(tmp_path: Path, m
     assert "capture failed" not in page.capture_status_text.toPlainText().lower()
 
 
-def test_grid_accuracy_dry_run_manual_capture_is_marked_synthetic_and_not_reused(
+def test_grid_accuracy_manual_capture_is_live_never_synthetic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
+    _grid_live_snapshot(controller, monkeypatch)
     tab = ExperimentTab(controller)
     controller.select_experiment("aurora_grid_accuracy")
-    controller.set_config_value("dry_run", True)
     controller.set_config_value("dimensions", [2, 2])
     controller.set_config_value("samples_per_point", 2)
-    state = controller.refresh()
-    tab.update(state)
+    tab.update(controller.refresh())
     page = tab._page_for("aurora_grid_accuracy")
     truth_entry = page._current_preview().truth_catalog[0]
 
-    seeds = iter([111, 222])
-    monkeypatch.setattr(experiment_pages_module.secrets, "randbits", lambda _bits: next(seeds))
+    batch = page._collect_point_samples(config=page._grid_config(), truth_entry=truth_entry)
 
-    first_batch = page._collect_point_samples(config=page._grid_config(), truth_entry=truth_entry)
-    second_batch = page._collect_point_samples(config=page._grid_config(), truth_entry=truth_entry)
-
-    assert first_batch[0]["capture_mode"] == "synthetic_dry_run"
-    assert "synthetic_capture" in first_batch[0]["status_flags"]
-    assert first_batch[0]["synthetic_seed_used"] == 111
-    assert second_batch[0]["synthetic_seed_used"] == 222
-    assert first_batch[0]["position_mm"] != second_batch[0]["position_mm"]
+    # Captures are real live-tracker measurements — synthetic generation is gone.
+    assert len(batch) == 2
+    assert batch[0]["capture_mode"] == "live_tracker"
+    assert "synthetic_capture" not in batch[0].get("status_flags", [])
+    assert "synthetic" not in str(batch[0]["position_source"]).lower()
 
 
 def test_grid_accuracy_preflight_blocks_synthetic_captures_in_live_mode(tmp_path: Path) -> None:
@@ -3908,6 +3931,7 @@ def test_grid_accuracy_page_shows_partial_status_and_selected_point_summary(tmp_
 def test_grid_accuracy_page_locks_capture_settings_until_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
+    _grid_live_snapshot(controller, monkeypatch)
     tab = ExperimentTab(controller)
     controller.select_experiment("aurora_grid_accuracy")
     state = controller.refresh()
@@ -3940,9 +3964,10 @@ def test_grid_accuracy_page_locks_capture_settings_until_restart(tmp_path: Path,
     assert page.capture_settings_notice.isHidden() is True
 
 
-def test_grid_accuracy_page_recapture_replaces_existing_batch_without_duplicate_rows(tmp_path: Path) -> None:
+def test_grid_accuracy_page_recapture_replaces_existing_batch_without_duplicate_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
+    _grid_live_snapshot(controller, monkeypatch)
     tab = ExperimentTab(controller)
     controller.select_experiment("aurora_grid_accuracy")
     state = controller.refresh()

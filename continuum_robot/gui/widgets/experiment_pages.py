@@ -1634,73 +1634,34 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self._refresh_now()
 
     def _collect_point_samples(self, *, config: GridDefinitionConfig, truth_entry: dict[str, object]) -> list[dict[str, object]]:
+        # Real captures only, from the live Aurora tracker. The probe tip vector
+        # MUST come from the latest valid pivot calibration — no synthetic
+        # capture, no hardcoded vector, no coil-origin fallback.
+        _ = truth_entry  # truth is matched by label downstream; not used to synthesize
         tip_vector_mm, tip_available = resolve_grid_tip_vector(config, project_root=self.controller.project_root)
-        if config.use_tip_calibration and not tip_available and not config.allow_coil_origin_fallback:
-            raise RuntimeError("Tip calibration is required for this grid capture.")
+        if not tip_available:
+            raise RuntimeError(
+                "Aurora grid accuracy requires a valid pivot calibration for tool "
+                f"{config.tool_id or '0B'}. Run a pivot calibration first — the latest "
+                "successful one is used automatically as the probe tip."
+            )
         sample_count = max(1, int(config.samples_per_point))
         raw_samples: list[dict[str, object]] = []
-        synthetic_capture_seed = (
-            int(config.seed)
-            if config.dry_run and config.seed is not None
-            else int(secrets.randbits(32))
-            if config.dry_run
-            else None
-        )
         for sample_index in range(sample_count):
-            if config.dry_run:
-                raw_sample = self._synthetic_grid_sample(
-                    config=config,
-                    truth_entry=truth_entry,
-                    sample_index=sample_index,
-                    tip_available=tip_available,
-                    capture_seed=int(synthetic_capture_seed or 0),
-                )
-            else:
-                snapshot = self.controller.tracking_service.get_snapshot()
-                raw_sample = capture_grid_measurement_from_snapshot(
-                    snapshot,
-                    tool_id=str(config.tool_id or "0B"),
-                    tip_vector_mm=tip_vector_mm if tip_available else None,
-                    require_tip_calibration=bool(config.use_tip_calibration),
-                    allow_coil_origin_fallback=bool(config.allow_coil_origin_fallback),
-                )
+            snapshot = self.controller.tracking_service.get_snapshot()
+            raw_sample = capture_grid_measurement_from_snapshot(
+                snapshot,
+                tool_id=str(config.tool_id or "0B"),
+                tip_vector_mm=tip_vector_mm,
+                require_tip_calibration=True,
+                allow_coil_origin_fallback=False,
+            )
             raw_sample["monotonic_time_s"] = float(self.controller.experiment_runner.monotonic_fn())
             raw_sample["wall_time_utc"] = datetime.now(timezone.utc).isoformat()
             raw_samples.append(raw_sample)
             if sample_index + 1 < sample_count and float(config.settle_time_s) > 0.0:
                 self.controller.experiment_runner.sleep_fn(float(config.settle_time_s))
         return raw_samples
-
-    def _synthetic_grid_sample(
-        self,
-        *,
-        config: GridDefinitionConfig,
-        truth_entry: dict[str, object],
-        sample_index: int,
-        tip_available: bool,
-        capture_seed: int,
-    ) -> dict[str, object]:
-        if config.use_tip_calibration and not tip_available and not config.allow_coil_origin_fallback:
-            raise RuntimeError("Tip calibration is required for this grid capture.")
-        truth_point = np.asarray(truth_entry["truth_point_mm"], dtype=float)
-        rng = np.random.default_rng(capture_seed + (int(truth_entry["target_index"]) * 100) + sample_index)
-        position = truth_point + np.asarray(config.synthetic_bias_mm, dtype=float) + rng.normal(
-            0.0,
-            float(config.synthetic_noise_std_mm),
-            size=3,
-        )
-        return {
-            "position_mm": [float(value) for value in position.tolist()],
-            "tool_translation_mm": [float(value) for value in position.tolist()],
-            "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
-            "tracker_frame_id": sample_index,
-            "freshness_s": 0.0,
-            "tracking_state": "valid",
-            "status_flags": ["dry_run", "synthetic_capture"],
-            "position_source": "synthetic_tip" if tip_available else "synthetic_coil_origin",
-            "capture_mode": "synthetic_dry_run",
-            "synthetic_seed_used": int(capture_seed),
-        }
 
     def _current_preview(self, *, config: GridDefinitionConfig | None = None):
         config = config or self._grid_config()

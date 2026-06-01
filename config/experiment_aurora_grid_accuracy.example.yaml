@@ -1,13 +1,17 @@
-dry_run: true
+# Aurora grid accuracy — 9-point (3x3) tracker accuracy grid. REAL DATA ONLY.
+#
+# - The probe tip vector is taken automatically from the LATEST valid pivot
+#   calibration (a successful run under data/pivot_calibration/ for tool 0B).
+#   There is NO hardcoded tip vector and NO coil-origin fallback — run a pivot
+#   calibration first or the grid run is refused.
+# - Synthetic / dry-run data is refused. Capture the 9 grid points from the
+#   live Aurora tracker on the grid page, then run.
+
 tool_id: "0B"
 rows: 3
 cols: 3
 spacing_mm: 25.4
 samples_per_point: 3
 settle_time_s: 0.05
-use_tip_calibration: true
-tip_vector_mm: [0.0, 0.0, 125.0]
-allow_coil_origin_fallback: true
 outlier_threshold_mm: 1.0
-synthetic_noise_std_mm: 0.25
-synthetic_bias_mm: [0.2, -0.1, 0.05]
+# acceptance_threshold_mm: 1.0   # optional pass/fail cutoff drawn on the residual figures

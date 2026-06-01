@@ -681,97 +681,91 @@ def test_repeatability_dataset_run_saves_prior_state_identity_and_target_catalog
     assert first.extra["target_set"] == "single_segment_ring_17"
 
 
-def test_aurora_grid_accuracy_missing_tip_calibration_is_classified(tmp_path: Path) -> None:
+def _grid_real_captured_points() -> list[dict]:
+    """Three real (non-synthetic) 0B tip captures spanning a 2D grid plane."""
+    def pt(label, idx, x, y):
+        return {
+            "label": label, "target_index": idx,
+            "raw_samples": [
+                {"position_mm": [x + 0.5, y, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                {"position_mm": [x - 0.5, y, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+            ],
+        }
+    return [pt("P01", 0, 5.0, 2.0), pt("P02", 1, 30.4, 2.0), pt("P03", 2, 5.0, 27.4)]
+
+
+def _patch_pivot(monkeypatch, *, available: bool, tip=(0.0, 0.0, 125.0), run="20990101_000000_pivot_calibration", rmse=0.42) -> None:
+    import continuum_robot.experiments.critical_experiments as ce
+    src = ce.GridTipSource(
+        tip_vector_mm=([float(v) for v in tip] if available else None),
+        available=available,
+        source=("pivot" if available else "none"),
+        pivot_run_name=(run if available else None),
+        pivot_rmse_mm=(rmse if available else None),
+        pivot_summary_path=("x" if available else None),
+    )
+    monkeypatch.setattr(ce, "resolve_grid_tip_source", lambda config, *, project_root: src)
+
+
+def test_aurora_grid_accuracy_requires_valid_pivot_calibration(tmp_path: Path, monkeypatch) -> None:
+    # No valid pivot calibration -> the run is refused even with real captures.
+    _patch_pivot(monkeypatch, available=False)
     runner = _runner(tmp_path)
     result = runner.run_experiment(
         "aurora_grid_accuracy",
-        config={
-            "dry_run": True,
-            "dimensions": [2, 2],
-            "repetitions_per_point": 1,
-            "samples_per_point": 1,
-            "tool_id": "0B",
-            "truth_frame": "tracker",
-            "use_tip_calibration": True,
-            "allow_coil_origin_fallback": False,
-        },
+        config={"rows": 2, "cols": 2, "spacing_mm": 25.4, "samples_per_point": 2,
+                "tool_id": "0B", "captured_points": _grid_real_captured_points()},
     )
-
     assert result.success is False
-    assert result.summary.status == "invalid_due_to_missing_tip_cal"
+    assert "valid pivot calibration" in result.message
 
 
-def test_aurora_grid_accuracy_no_longer_requires_registration(tmp_path: Path) -> None:
+def test_aurora_grid_accuracy_uses_latest_pivot_and_records_provenance(tmp_path: Path, monkeypatch) -> None:
+    # Real captures + a valid pivot -> success; the pivot tip + run name are
+    # recorded in the metrics, and no registration is required.
+    _patch_pivot(monkeypatch, available=True, tip=(0.1, -0.2, 124.0), run="20260424_230515_pivot_calibration_review")
     runner = _runner(tmp_path)
     result = runner.run_experiment(
         "aurora_grid_accuracy",
-        config={
-            "dry_run": True,
-            "dimensions": [2, 2],
-            "repetitions_per_point": 1,
-            "samples_per_point": 1,
-            "tool_id": "0B",
-            "use_tip_calibration": True,
-            "tip_vector_mm": [0.0, 0.0, 125.0],
-            "allow_coil_origin_fallback": False,
-        },
+        config={"rows": 2, "cols": 2, "spacing_mm": 25.4, "samples_per_point": 2,
+                "tool_id": "0B", "captured_points": _grid_real_captured_points()},
     )
-
     assert result.success is True
     assert result.summary.status == "success"
+    metrics = result.summary.experiment_metrics
+    assert metrics["pivot_calibration_run"] == "20260424_230515_pivot_calibration_review"
+    assert metrics["pivot_tip_vector_mm"] == [0.1, -0.2, 124.0]
+    assert metrics["pivot_calibration"]["rmse_mm"] == 0.42
 
 
-def test_aurora_grid_accuracy_live_without_captured_points_refuses_synthetic_fallback(tmp_path: Path) -> None:
+def test_aurora_grid_accuracy_refuses_run_without_captured_points(tmp_path: Path, monkeypatch) -> None:
+    _patch_pivot(monkeypatch, available=True)
     runner = _runner(tmp_path)
     result = runner.run_experiment(
         "aurora_grid_accuracy",
-        config={
-            "dry_run": False,
-            "dimensions": [2, 2],
-            "repetitions_per_point": 1,
-            "samples_per_point": 1,
-            "tool_id": "0B",
-            "use_tip_calibration": False,
-            "allow_coil_origin_fallback": True,
-        },
+        config={"rows": 2, "cols": 2, "spacing_mm": 25.4, "samples_per_point": 1, "tool_id": "0B"},
     )
-
     assert result.success is False
-    assert "refused to synthesize live data" in result.message
+    assert "requires real captured grid points" in result.message
 
 
-def test_aurora_grid_accuracy_live_rejects_synthetic_captured_points(tmp_path: Path) -> None:
+def test_aurora_grid_accuracy_refuses_synthetic_captured_points(tmp_path: Path, monkeypatch) -> None:
+    # Synthetic samples are refused UNCONDITIONALLY (regardless of dry_run).
+    _patch_pivot(monkeypatch, available=True)
     runner = _runner(tmp_path)
     result = runner.run_experiment(
         "aurora_grid_accuracy",
         config={
-            "dry_run": False,
-            "dimensions": [2, 2],
-            "samples_per_point": 1,
-            "tool_id": "0B",
-            "use_tip_calibration": False,
-            "allow_coil_origin_fallback": True,
+            "rows": 2, "cols": 2, "spacing_mm": 25.4, "samples_per_point": 1, "tool_id": "0B",
             "captured_points": [
-                {
-                    "label": "P01",
-                    "target_index": 0,
-                    "raw_samples": [
-                        {
-                            "position_mm": [0.0, 0.0, 0.0],
-                            "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
-                            "tracking_state": "valid",
-                            "position_source": "synthetic_tip",
-                            "capture_mode": "synthetic_dry_run",
-                            "status_flags": ["dry_run", "synthetic_capture"],
-                        }
-                    ],
-                }
-            ],
+                {"label": "P01", "target_index": 0, "raw_samples": [
+                    {"position_mm": [0.0, 0.0, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                     "tracking_state": "valid", "position_source": "synthetic_tip",
+                     "capture_mode": "synthetic_dry_run", "status_flags": ["dry_run", "synthetic_capture"]}]}],
         },
     )
-
     assert result.success is False
-    assert "dry-run/synthetic captured samples" in result.message
+    assert "synthetic" in result.message.lower()
 
 
 def test_aurora_grid_accuracy_run_saves_captured_point_dataset(tmp_path: Path) -> None:
@@ -989,7 +983,9 @@ def test_aurora_grid_preview_uses_actual_captured_position_source_not_current_ti
     assert preview.metrics["tip_calibration_available"] is False
     assert preview.metrics["tip_calibration_used"] is False
     assert preview.metrics["coil_origin_fallback_used"] is True
-    assert preview.metrics["status"] == "partial_success"
+    # No valid pivot calibration (tmp project root) + no coil-origin fallback
+    # for the grid run => missing-tip-cal, not partial_success.
+    assert preview.metrics["status"] == "invalid_due_to_missing_tip_cal"
 
 
 def test_repeatability_dataset_records_robot_frame_when_registration_exists(tmp_path: Path) -> None:
