@@ -1138,9 +1138,14 @@ def test_shipped_system_yaml_carries_slowdown_profile() -> None:
     assert dxl.get("default_profile_acceleration") not in (None, 0), (
         "default_profile_acceleration must be non-null/non-zero for the slowdown to apply"
     )
-    # Sanity bounds: not so fast it doesn't slow anything, not so slow it
-    # makes the rig feel broken.
-    assert 5 <= int(dxl["default_profile_velocity"]) <= 200
+    # Sanity bounds. The non-zero guarantee is asserted above; here we only
+    # bound the magnitude so a stray huge value can't silently un-slow the
+    # rig. The lower bound is 1 (any positive register value is a real
+    # slowdown vs the firmware default of 0 = unlimited). The two-segment
+    # bench-up intentionally ships very low values (velocity 3 / accel 1,
+    # see config commit 51119da) for the slow, deliberate motion profile;
+    # the test must not over-constrain that operator tuning.
+    assert 1 <= int(dxl["default_profile_velocity"]) <= 200
     assert 1 <= int(dxl["default_profile_acceleration"]) <= 100
 
 

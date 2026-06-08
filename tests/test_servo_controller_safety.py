@@ -779,7 +779,12 @@ def test_system_controller_reports_configured_4servo_readiness(tmp_path: Path) -
 
     assert controller.state.bus_reachable is True
     assert controller.state.motion_ready is True
-    assert "expected=[1, 2, 3, 4]" in controller.state.readiness_message
+    # The operator-facing readiness summary reports all 4 configured servos
+    # detected + packet-readable (counts, not an explicit id list — see the
+    # richer summary format in system_controller._refresh_servo_readiness).
+    assert "Detected 4/4" in controller.state.readiness_message
+    assert "Packet read 4/4" in controller.state.readiness_message
+    # The explicit discovered id list still lives in the bench debug text.
     assert "discovered_ids=[1, 2, 3, 4]" in controller.state.bench_debug_text
 
 
