@@ -4,6 +4,8 @@ This repository contains the current Raspberry Pi operator stack for a tendon-dr
 
 The project is a research and thesis platform, not just a control GUI. Its central job is to expose, quantify, and reduce error across the whole robot pipeline: tracker consistency, transform-chain correctness, registration, base motion, servo positioning, pretension state, hysteresis, and repeatability.
 
+> **New developer?** Start with [`docs/DEVELOPER_ONBOARDING.md`](docs/DEVELOPER_ONBOARDING.md): first-time setup, the dev loop, how to add an experiment, the pretension-mode decision table, and the known tech-debt list.
+
 ## Why This Exists
 
 The previous architecture depended on scattered scripts, legacy bridge paths, weak validation boundaries, and startup assumptions that made it hard to know where error entered the system. This repo moves the workflow into one Python application with explicit services, repeatable calibration artifacts, GUI-guided operator steps, canonical experiment datasets, and validation outputs.
